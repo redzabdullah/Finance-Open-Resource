@@ -116,8 +116,10 @@ Compare these companies side by side: {joined}.
 
 Workflow:
 1. `compare_peers` with tickers [{joined}]. The server returns market cap,
-   latest annual revenue and net income, net margin, ROE and one-year price
-   change for each company, with rankings and the line items and dates used.
+   latest annual revenue and net income, net margin, ROE, one-year price
+   change (traded prices, excluding dividends) and one-year total return
+   (dividend-adjusted) for each company, with rankings and the line items
+   and dates used.
 2. Report the figures exactly as returned; do not recalculate them. Quote
    each company's `fiscal_period_end` and the `price_window` dates.
 3. For any gap listed in `coverage_audit.missing.gaps`, say "unavailable"
@@ -126,8 +128,9 @@ Workflow:
    the source reported.
 
 Output: one comparison table (rows = companies; columns = market cap,
-revenue, net income, net margin, ROE, 1-year price change, fiscal period
-end), then three to five plain observations based on the rankings. Repeat
+revenue, net income, net margin, ROE, 1-year price change, 1-year total
+return, fiscal period end). Label price change as excluding dividends and
+total return as dividend-adjusted, then three to five plain observations based on the rankings. Repeat
 any notes the tool returns (for example about currencies). For banks and
 other financial firms, say that net margin is a weak measure and ROE is
 more meaningful.

@@ -692,6 +692,9 @@ def get_historical_prices(
 ) -> dict:
     """Return historical OHLCV prices from Yahoo Finance.
 
+    ``open``, ``high``, ``low`` and ``close`` are traded prices, adjusted for
+    stock splits but not for dividends. ``adj_close`` is Yahoo's
+    dividend-and-split-adjusted close, suitable for total-return estimates.
     Results are limited to the most recent 250 rows, so older data may be
     truncated when the requested range and interval would exceed that limit.
     """
@@ -732,8 +735,10 @@ def get_historical_prices(
         }
 
     try:
+        # auto_adjust=False keeps traded closes in "Close" and puts the
+        # dividend-adjusted series in "Adj Close", so both can be reported.
         history = yf.Ticker(symbol).history(
-            period=selected_period, interval=selected_interval
+            period=selected_period, interval=selected_interval, auto_adjust=False
         )
         if history.empty:
             return {"error": f"Invalid ticker '{symbol}': no market data was found."}
@@ -747,6 +752,7 @@ def get_historical_prices(
                     "high": _json_value(row["High"]),
                     "low": _json_value(row["Low"]),
                     "close": _json_value(row["Close"]),
+                    "adj_close": _json_value(row.get("Adj Close")),
                     "volume": _json_value(row["Volume"]),
                 }
             )
@@ -755,6 +761,7 @@ def get_historical_prices(
             "ticker": symbol,
             "period": selected_period,
             "interval": selected_interval,
+            "price_basis": "open/high/low/close are traded prices adjusted for splits only; adj_close is also adjusted for dividends",
             "prices": prices,
         }
     except Exception as exc:
@@ -1645,6 +1652,7 @@ _METRIC_DATA_TYPE = {
     "current_price": "prices",
     "market_cap": "prices",
     "price_change_1y_pct": "prices",
+    "total_return_1y_pct": "prices",
     "dividends_ttm": "corporate_actions",
     "dividend_yield_pct": "corporate_actions",
 }
@@ -1653,7 +1661,8 @@ _METRIC_DEFINITIONS = {
     "net_margin_pct": "net_income / revenue x 100, latest annual period",
     "roe_pct": "net income to common stockholders / period-end stockholders' equity x 100, latest annual period (not average equity)",
     "debt_to_equity": "total_debt / stockholders_equity, latest annual balance sheet",
-    "price_change_1y_pct": "(last weekly close - first weekly close) / first weekly close x 100 over the past year; excludes dividends",
+    "price_change_1y_pct": "(last weekly close - first weekly close) / first weekly close x 100 over the past year, using traded closes adjusted for splits only; excludes dividends",
+    "total_return_1y_pct": "the same calculation using Yahoo's dividend-and-split-adjusted closes; approximates price change plus dividends reinvested",
     "dividends_ttm": "sum of dividends per share with ex-dates in the last 365 days",
     "dividend_yield_pct": "dividends_ttm / current_price x 100",
 }
@@ -1665,6 +1674,7 @@ COMPARE_PEERS_FIELDS = [
     "net_margin_pct",
     "roe_pct",
     "price_change_1y_pct",
+    "total_return_1y_pct",
 ]
 
 COMPANY_PROFILE_FIELDS = [
@@ -1679,6 +1689,7 @@ COMPANY_PROFILE_FIELDS = [
     "debt_to_equity",
     "free_cash_flow",
     "price_change_1y_pct",
+    "total_return_1y_pct",
 ]
 
 
@@ -1769,20 +1780,20 @@ def _company_metrics(symbol: str, sections: set[str]) -> dict:
 
     history = get_historical_prices(symbol, "1y", "1wk")
     components.append({"tool": "get_historical_prices", "status": history.get("coverage_audit", {}).get("status")})
-    closes = [row for row in history.get("prices") or [] if _number(row.get("close")) is not None]
+    rows = history.get("prices") or []
     price_window = None
-    if len(closes) >= 2:
-        first, last = closes[0], closes[-1]
-        price_window = {
-            "start_date": first["date"],
-            "start_close": first["close"],
-            "end_date": last["date"],
-            "end_close": last["close"],
-        }
-        metrics["price_change_1y_pct"] = _ratio(last["close"] - first["close"], first["close"])
-    else:
-        metrics["price_change_1y_pct"] = None
-        reasons["price_change_1y_pct"] = history.get("error") or "Fewer than two weekly closes were returned."
+    for field, column in (("price_change_1y_pct", "close"), ("total_return_1y_pct", "adj_close")):
+        points = [row for row in rows if _number(row.get(column)) is not None]
+        if len(points) >= 2:
+            first, last = points[0], points[-1]
+            metrics[field] = _ratio(last[column] - first[column], first[column])
+            if price_window is None:
+                price_window = {"start_date": first["date"], "end_date": last["date"]}
+            price_window[f"start_{column}"] = first[column]
+            price_window[f"end_{column}"] = last[column]
+        else:
+            metrics[field] = None
+            reasons[field] = history.get("error") or f"Fewer than two weekly {column} values were returned."
 
     if "dividends" in sections:
         actions = get_corporate_actions(symbol, "dividends")
@@ -1914,7 +1925,9 @@ def compare_peers(tickers: list[str] = None) -> dict:
     """Compare 2-10 companies with metrics computed by the server.
 
     Returns market cap, latest annual revenue and net income, net margin,
-    return on equity and one-year price change for each ticker, plus rankings.
+    return on equity, one-year price change (traded prices, excluding
+    dividends) and one-year total return (dividend-adjusted) for each ticker,
+    plus rankings.
     Report the figures as returned rather than recalculating them. The
     coverage audit only checks the fields reported here, for each company's
     latest annual period.
@@ -1944,8 +1957,8 @@ def compare_peers(tickers: list[str] = None) -> dict:
             }
             for entry in entries
         ],
-        "rankings": {field: _rank(entries, field) for field in ("market_cap", "net_margin_pct", "roe_pct", "price_change_1y_pct")},
-        "definitions": {key: _METRIC_DEFINITIONS[key] for key in ("net_margin_pct", "roe_pct", "price_change_1y_pct")},
+        "rankings": {field: _rank(entries, field) for field in ("market_cap", "net_margin_pct", "roe_pct", "price_change_1y_pct", "total_return_1y_pct")},
+        "definitions": {key: _METRIC_DEFINITIONS[key] for key in ("net_margin_pct", "roe_pct", "price_change_1y_pct", "total_return_1y_pct")},
         "notes": [
             "Figures are computed by the server; report them as returned.",
             "Statement figures use each company's latest annual period; check fiscal_period_end before comparing companies with different year ends.",
@@ -1975,7 +1988,7 @@ def get_company_profile(ticker: str = "") -> dict:
 
     Includes price, market cap, latest annual revenue, net income, net margin,
     ROE, total debt, equity, debt-to-equity, free cash flow, one-year price
-    change, and trailing-twelve-month dividends and yield. Report the figures
+    change and total return, and trailing-twelve-month dividends and yield. Report the figures
     as returned rather than recalculating them.
     """
     symbol = _normalize_text(ticker).upper()

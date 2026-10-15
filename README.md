@@ -59,10 +59,14 @@ Research tools: `search_finance_research`, `get_research_paper`,
 
 Composite tools: `compare_peers` (2-10 tickers) and `get_company_profile` (one
 ticker). They chain the market tools above and compute net margin, ROE,
-debt-to-equity, one-year price change and dividend yield in code, using each
+debt-to-equity, one-year price change (traded prices, excluding dividends),
+one-year total return (dividend-adjusted) and dividend yield in code, using each
 company's latest annual period. Their `coverage_audit` only checks the fields
 they report, so blank line items in older periods do not mark a result
 partial; the underlying tool audits remain visible in `component_audits`.
+
+`get_historical_prices` returns traded prices (adjusted for splits only) in
+`open`/`high`/`low`/`close`, and Yahoo's dividend-adjusted close in `adj_close`.
 
 Workflow tool: `get_research_workflow` (see Workflow prompts below).
 

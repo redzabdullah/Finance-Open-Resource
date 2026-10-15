@@ -51,11 +51,13 @@ QUOTES = {
     "MISMATCH": {"current_price": 20.0, "market_cap": 2e9},
 }
 
+# (traded start, traded end, adjusted start, adjusted end). Adjusted start
+# prices are lower because later dividends are deducted from them.
 PRICES = {
-    "U11.SI": (32.6246, 41.63),
-    "D05.SI": (52.1405, 73.65),
-    "GAP.SI": (10.0, 10.0),
-    "MISMATCH": (10.0, 20.0),
+    "U11.SI": (34.10, 41.63, 32.6246, 41.63),
+    "D05.SI": (54.00, 73.65, 52.1405, 73.65),
+    "GAP.SI": (10.0, 10.0, 10.0, 10.0),
+    "MISMATCH": (10.0, 20.0, 10.0, 20.0),
 }
 
 
@@ -79,13 +81,13 @@ def fake_history(symbol, period, interval):
     if symbol not in PRICES:
         return {"error": f"Invalid ticker '{symbol}': no market data was found.",
                 "coverage_audit": {"status": "unavailable"}}
-    start, end = PRICES[symbol]
+    start, end, adj_start, adj_end = PRICES[symbol]
     return {
         "ticker": symbol,
         "prices": [
-            {"date": (TODAY - timedelta(days=364)).isoformat(), "close": start},
-            {"date": (TODAY - timedelta(days=180)).isoformat(), "close": None},
-            {"date": TODAY.isoformat(), "close": end},
+            {"date": (TODAY - timedelta(days=364)).isoformat(), "close": start, "adj_close": adj_start},
+            {"date": (TODAY - timedelta(days=180)).isoformat(), "close": None, "adj_close": None},
+            {"date": TODAY.isoformat(), "close": end, "adj_close": end},
         ],
         "coverage_audit": {"status": "complete"},
     }
@@ -123,7 +125,10 @@ class ComparePeersTests(CompositeToolTestCase):
         uob = next(c for c in result["companies"] if c["ticker"] == "U11.SI")
         self.assertEqual(uob["net_margin_pct"], 33.91)
         self.assertEqual(uob["roe_pct"], 8.95)  # 4,589m / 51,248m
-        self.assertEqual(uob["price_change_1y_pct"], 27.6)  # not 27.61
+        self.assertEqual(uob["price_change_1y_pct"], 22.08)  # traded prices only
+        self.assertEqual(uob["total_return_1y_pct"], 27.6)  # dividend-adjusted, not 27.61
+        self.assertEqual(uob["price_window"]["start_close"], 34.10)
+        self.assertEqual(uob["price_window"]["start_adj_close"], 32.6246)
         self.assertEqual(uob["fiscal_period_end"], "2025-12-31")
         self.assertEqual(uob["line_items_used"]["revenue"], "Total Revenue")
         dbs = next(c for c in result["companies"] if c["ticker"] == "D05.SI")
@@ -212,6 +217,29 @@ class CompanyProfileTests(CompositeToolTestCase):
     def test_validation(self):
         result = server.get_company_profile("  ")
         self.assertEqual(result["error_type"], "validation")
+
+
+class PriceBasisTests(unittest.TestCase):
+    def test_historical_prices_report_traded_and_adjusted_closes(self):
+        import pandas as pd
+
+        frame = pd.DataFrame(
+            {"Open": [10.0], "High": [11.0], "Low": [9.0], "Close": [10.5],
+             "Adj Close": [10.1], "Volume": [100]},
+            index=pd.to_datetime(["2026-10-14"]),
+        )
+        with patch.object(server.yf, "Ticker") as ticker:
+            ticker.return_value.history.return_value = frame
+            result = server.get_historical_prices("D05.SI", "5d", "1d")
+        ticker.return_value.history.assert_called_with(period="5d", interval="1d", auto_adjust=False)
+        self.assertEqual(result["prices"][0]["close"], 10.5)
+        self.assertEqual(result["prices"][0]["adj_close"], 10.1)
+        self.assertIn("splits only", result["price_basis"])
+
+    def test_definitions_no_longer_mislabel_adjusted_prices(self):
+        self.assertIn("excludes dividends", server._METRIC_DEFINITIONS["price_change_1y_pct"])
+        self.assertIn("traded closes", server._METRIC_DEFINITIONS["price_change_1y_pct"])
+        self.assertIn("dividend", server._METRIC_DEFINITIONS["total_return_1y_pct"])
 
 
 class RegistrationTests(unittest.TestCase):

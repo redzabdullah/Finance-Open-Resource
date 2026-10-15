@@ -22,7 +22,7 @@ your approval when a guardrail requires it.
 | Understands your question | Yes | No |
 | Decides which tools to call and in what order | Yes, optionally guided by a recipe | Supplies the recipes |
 | Fetches data | Asks for it | Yes, read-only |
-| Calculates ratios (margins, ROE, price changes) | Reports them | Yes, in code, through the composite tools |
+| Calculates ratios (margins, ROE, price changes, total returns) | Reports them | Yes, in code, through the composite tools |
 | Checks data completeness | Reads the audit | Writes a `coverage_audit` on every response |
 | Suggests other sources when data is missing | Relays the suggestion to you | Writes a `fallback_recommendation` |
 | Uses another source | Only after you say yes | Never on its own |
@@ -131,7 +131,8 @@ Request: *"Use the peer comparison workflow for D05.SI, O39.SI, U11.SI."*
    recipe.
 2. It calls `compare_peers` for the three banks. The server fetches each
    bank's quote, latest annual income statement and balance sheet, and one
-   year of weekly prices, then computes net margin, ROE and price change.
+   year of weekly prices, then computes net margin, ROE, price change
+   (traded prices) and total return (dividend-adjusted) separately.
 3. The combined `coverage_audit` is `complete`, because every reported
    figure is present for FY2025. Blank fields in older years are ignored,
    though the underlying statement audits still show them as `partial`.
