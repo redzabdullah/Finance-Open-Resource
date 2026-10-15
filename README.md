@@ -56,6 +56,23 @@ Daily usage persists across server restarts in `.av_quota_state.json`, a
 git-ignored local runtime-state file; the rolling minute window remains in
 memory.
 
+## Workflow prompts
+
+The server also exposes MCP prompts: ready-made workflows a client's agent can
+follow step by step. They contain no model calls; each one tells the agent
+which tools to call, in what order, and restates the coverage rules below
+(check every `coverage_audit`, never fetch fallbacks without confirmation,
+never blend Alpha Vantage into Yahoo Finance values).
+
+| Prompt                      | Arguments                                   | Workflow                                                                 |
+| --------------------------- | ------------------------------------------- | ------------------------------------------------------------------------ |
+| `company_research_brief`    | `ticker`, optional `focus`                  | Quote, price history, statements, actions, holders, news, research       |
+| `finance_literature_review` | `topic`, `year_from`, `include_preprints`   | OpenAlex search, full records, arXiv preprints, DOAJ journal checks       |
+| `peer_comparison`           | `tickers` (2-10, comma-separated)           | Market snapshot, latest income statements, 1-year price change table     |
+
+Prompts live in `prompts.py`; a test fails if a prompt names a tool the server
+does not provide.
+
 ## Coverage contract
 
 Every tool response includes a `coverage_audit` without changing its original

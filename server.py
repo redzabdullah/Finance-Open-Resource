@@ -23,6 +23,7 @@ from mcp.server.fastmcp import FastMCP, Context
 from mcp.types import ToolAnnotations
 
 from alphavantage_client import request as alphavantage_request
+from prompts import register_prompts
 
 
 mcp = FastMCP(
@@ -1617,6 +1618,9 @@ def search_finance_research_batch(
                 }
 
     return {"results": [indexed_results[index] for index in range(len(entities))]}
+
+
+register_prompts(mcp)
 
 
 if __name__ == "__main__":
