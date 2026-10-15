@@ -1,7 +1,7 @@
 # How the agentic flow works
 
-This server is the tool layer of an agentic research system. It does not
-contain an AI model and makes no decisions of its own. The **agent** is the AI
+This server is the tool layer of an agentic research system. It contains no
+AI model of its own and **never calls a paid AI API**. The **agent** is the AI
 assistant you connect it to (for example ChatGPT or Claude). The server's job
 is to give that agent three things:
 
@@ -15,6 +15,12 @@ The agent supplies the judgment: it decides which tools to use, reads the
 results, adapts when something is missing, writes the answer, and asks for
 your approval when a guardrail requires it.
 
+> **No AI API costs.** Running this server costs nothing in AI fees. The one
+> place where the server asks for AI-written text (`synthesize_research`) uses
+> MCP sampling: the request goes to the AI app you are already using, which
+> writes the text with its own model. If your app does not support sampling,
+> the tool simply returns the sources for your app's AI to summarise.
+
 ## Who does what
 
 | | The agent (ChatGPT, Claude, …) | This server |
@@ -26,6 +32,7 @@ your approval when a guardrail requires it.
 | Checks data completeness | Reads the audit | Writes a `coverage_audit` on every response |
 | Suggests other sources when data is missing | Relays the suggestion to you | Writes a `fallback_recommendation` |
 | Uses another source | Only after you say yes | Never on its own |
+| Writes a research synthesis | Yes | Asks your app's model to, via `synthesize_research` (no paid API), then checks its citations |
 | Writes the final answer | Yes | No |
 
 ## The flow, step by step
@@ -62,7 +69,7 @@ Three recipes live in [`prompts.py`](../prompts.py):
 | Workflow | What the agent is told to do |
 | --- | --- |
 | `company_research_brief` | Company profile with server-computed ratios, one-year price history, dividends and splits, major holders, news, and related academic research, then a "Data gaps" section |
-| `finance_literature_review` | Search published research (OpenAlex), read the top papers, search preprints (arXiv) separately, and check journals against DOAJ |
+| `finance_literature_review` | Search published research (OpenAlex), read the top papers, search preprints (arXiv) separately, check journals against DOAJ, then call `synthesize_research` for a cited draft |
 | `peer_comparison` | Call `compare_peers`, report its server-computed figures without recalculating, and explain any gaps |
 
 The recipes reach the agent in two ways, because AI clients differ:
@@ -123,6 +130,45 @@ the agent reports figures instead of doing arithmetic. They:
 This is deliberately *less* agentic than letting the model do everything:
 mechanical steps move into code, and the agent keeps the judgment.
 
+## Model in the loop: `synthesize_research`
+
+This is the one place where the server itself involves an AI model, and it
+does so without any API key or cost.
+
+```mermaid
+sequenceDiagram
+    participant Agent as Your AI app
+    participant Server as Finance Data and Lit MCP server
+    participant Data as OpenAlex, arXiv
+
+    Agent->>Server: synthesize_research("ESG and bank returns")
+    Server->>Data: Search published papers and preprints
+    Data-->>Server: Papers with abstracts
+    Server->>Server: Number the sources: P1, P2 (published), R1 (preprint)
+    alt App supports MCP sampling
+        Server->>Agent: Sampling request: "Summarise only these sources, cite IDs, flag preprints"
+        Agent-->>Server: Synthesis written by the app's own model
+        Server->>Server: Check citations (no invented IDs, preprints labelled)
+        Server-->>Agent: Synthesis + sources + citation_check
+    else App does not support sampling (e.g. ChatGPT today)
+        Server-->>Agent: Sources + instructions_for_agent
+        Agent->>Agent: Writes the synthesis itself, following the same rules
+    end
+```
+
+What makes this agentic rather than a plain lookup:
+
+- The server **delegates** a reasoning task to a model and constrains it: use
+  only the supplied sources, cite every claim by ID, say "preprint" when
+  relying on one, give no investment advice.
+- The server **checks the model's output** before returning it.
+  `citation_check` reports any cited ID that was never supplied, missing
+  citations, and preprints used without being labelled, so the agent (and
+  you) can see whether the synthesis can be trusted.
+- The app stays in control: MCP lets it ask you to approve the sampling
+  request, and a declined or failed request falls back to returning the
+  sources (`synthesis_status` says which path was taken).
+
 ## Worked example
 
 Request: *"Use the peer comparison workflow for D05.SI, O39.SI, U11.SI."*
@@ -147,15 +193,14 @@ Request: *"Use the peer comparison workflow for D05.SI, O39.SI, U11.SI."*
 
 ## What this server deliberately does not do
 
-- It does not call an AI model or make decisions.
+- It does not call any paid AI API or need an AI API key. AI-written text
+  only ever comes from your own app's model via MCP sampling.
 - It does not fetch supplementary sources without your confirmation.
 - It does not merge Alpha Vantage figures into Yahoo Finance figures.
 - It does not give investment advice. Recipes instruct the agent not to
   either.
 
-## Roadmap
-
-The agentic capability is being added in small steps:
+## What has been built
 
 | Step | Change | Status |
 | --- | --- | --- |
@@ -163,11 +208,24 @@ The agentic capability is being added in small steps:
 | 1b | `get_research_workflow` tool for tool-only clients; correct read-only annotations on all tools | Done |
 | – | Market-aware fallback recommendations (SGX, HKEX, LSE, JPX, ASX, TSX, NSE/BSE, KRX) | Done |
 | 2 | Composite tools (`compare_peers`, `get_company_profile`) that run fixed multi-step chains and compute ratios in code, with a combined audit that only flags gaps in the data actually used | Done |
-| 3 | First model-in-the-loop step: the server asks the client's model to summarise research results (MCP sampling), with a plain-data fallback for clients that cannot | Planned |
-| 4 | Bounded decision loop: the model chooses the next tool within fixed step and quota limits, with every fallback still confirmed by the user | Planned |
-| 5 | A separate orchestrator agent that uses this server as its tool layer | Planned |
-| 6 | Evaluations that check the guardrails hold (no unconfirmed fallbacks, no blended sources, empty never reported as zero) | Planned |
+| 3 | Model in the loop: `synthesize_research` asks the app's own model for a cited synthesis via MCP sampling, checks its citations, and falls back to plain sources where sampling is unsupported | Done |
 
-Steps 1 and 2 make the agent more reliable by giving it good recipes and
-dependable building blocks. Steps 3 and 4 are where the server itself begins
-to use a model.
+Steps 1 and 2 make the agent reliable by giving it good recipes and
+dependable building blocks. Step 3 shows the server itself working with a
+model, at no cost. Together they are the agentic flow this project is meant
+to demonstrate.
+
+## Ideas for extending it (not planned)
+
+This is a teaching project, so it deliberately stops here. If you want to go
+further, these are natural next exercises:
+
+- **Bounded decision loop.** Let the model choose the next tool within fixed
+  limits (for example, at most five steps), using sampling with tool use.
+  Every fallback must still be confirmed by the user.
+- **Guardrail evaluations.** Write scenarios that check an agent never fetches
+  a fallback without asking, never blends Alpha Vantage with Yahoo Finance
+  figures, and never reports missing data as zero.
+- **A standalone research agent** that uses this server as its tools. Note
+  that this would need its own AI model, which usually means paid API usage,
+  so it falls outside this project's no-cost design.

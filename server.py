@@ -2023,6 +2023,232 @@ def get_company_profile(ticker: str = "") -> dict:
     return response
 
 
+# ---------------------------------------------------------------------------
+# Step 3: model-in-the-loop via MCP sampling. The server never calls a paid AI
+# API. When the connected client supports sampling, the client's own model
+# writes the synthesis (and the client may ask the user to approve that
+# request); otherwise the tool returns the sources for the agent to summarise.
+
+SYNTHESIS_MAX_TOKENS = 1200
+
+SYNTHESIS_SYSTEM_PROMPT = """\
+You summarise finance research for a researcher. Follow these rules exactly:
+1. Use only the numbered sources provided. Do not add papers, data or facts
+   from memory.
+2. Cite every claim with its source ID in square brackets, e.g. [P1] or
+   [P2, R1]. Only use IDs that appear in the source list.
+3. IDs starting with R are arXiv preprints that are not peer reviewed. Say
+   "preprint" whenever you rely on one.
+4. Abstracts are snippets; do not overstate findings beyond what they say.
+5. Do not give investment advice.
+6. If the sources are too few or off-topic to answer, say so plainly."""
+
+
+def _client_supports_sampling(ctx: Context | None) -> bool:
+    if ctx is None:
+        return False
+    try:
+        capability = mcp_types.ClientCapabilities(sampling=mcp_types.SamplingCapability())
+        return ctx.session.check_client_capability(capability)
+    except (AttributeError, RuntimeError):
+        return False
+
+
+def _synthesis_sources(published: dict, preprints: dict | None) -> list[dict]:
+    sources = []
+    for index, work in enumerate(published.get("results") or [], start=1):
+        sources.append({
+            "id": f"P{index}",
+            "type": "published",
+            "title": work.get("title"),
+            "authors": (work.get("authors") or [])[:5],
+            "year": work.get("year"),
+            "venue": work.get("journal"),
+            "doi": work.get("doi"),
+            "cited_by_count": work.get("cited_by_count"),
+            "abstract_snippet": work.get("abstract_snippet"),
+        })
+    for index, paper in enumerate((preprints or {}).get("results") or [], start=1):
+        sources.append({
+            "id": f"R{index}",
+            "type": "preprint",
+            "review_status": "preprint - not peer reviewed",
+            "title": paper.get("title"),
+            "authors": (paper.get("authors") or [])[:5],
+            "year": (paper.get("submission_date") or "")[:4] or None,
+            "arxiv_id": paper.get("arxiv_id"),
+            "abstract_snippet": paper.get("abstract_snippet"),
+        })
+    return sources
+
+
+def _synthesis_request(topic: str, sources: list[dict]) -> str:
+    lines = [f"Research topic: {topic}", "", "Sources:"]
+    for source in sources:
+        authors = ", ".join(source["authors"]) or "Unknown authors"
+        label = "PREPRINT, not peer reviewed" if source["type"] == "preprint" else source.get("venue") or "Published"
+        lines.append(f"[{source['id']}] {source['title']} - {authors} ({source.get('year') or 'n.d.'}; {label})")
+        lines.append(f"    Abstract snippet: {source.get('abstract_snippet') or 'No abstract available.'}")
+    lines += [
+        "",
+        "Write at most 400 words with these headings: Key themes; Main findings; "
+        "Points of disagreement; Gaps for further research. Cite source IDs for every claim.",
+    ]
+    return "\n".join(lines)
+
+
+def _sampled_text(result: Any) -> str:
+    content = getattr(result, "content", None)
+    parts = content if isinstance(content, list) else [content]
+    return "\n".join(part.text for part in parts if getattr(part, "type", None) == "text").strip()
+
+
+def _check_citations(text: str, sources: list[dict]) -> dict:
+    """Verify the model only cited source IDs the server supplied."""
+    valid = {source["id"] for source in sources}
+    cited = []
+    for group in re.findall(r"\[([^\[\]]+)\]", text):
+        for token in re.split(r"[,;\s]+", group):
+            if re.fullmatch(r"[PR]\d+", token):
+                cited.append(token)
+    cited_set = set(cited)
+    warnings = []
+    unknown = sorted(cited_set - valid)
+    if unknown:
+        warnings.append(f"Cites IDs that were not supplied: {', '.join(unknown)}.")
+    if not cited_set:
+        warnings.append("The synthesis contains no source citations.")
+    if any(token.startswith("R") for token in cited_set) and "preprint" not in text.lower():
+        warnings.append("Cites preprints without saying they are preprints.")
+    return {
+        "passed": not warnings,
+        "cited_ids": sorted(cited_set & valid, key=lambda value: (value[0], int(value[1:]))),
+        "uncited_ids": sorted(valid - cited_set, key=lambda value: (value[0], int(value[1:]))),
+        "unknown_ids": unknown,
+        "warnings": warnings,
+    }
+
+
+@mcp.tool(
+    title="Synthesize Research",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+async def synthesize_research(
+    topic: str = "",
+    year_from: int = 0,
+    include_preprints: bool = True,
+    limit: int = 8,
+    ctx: Context | None = None,
+) -> dict:
+    """Find finance research on a topic and return a cited synthesis.
+
+    Searches OpenAlex (published) and optionally arXiv (preprints), then asks
+    the connected AI app's own model to write a short synthesis citing source
+    IDs such as [P1] and [R1], and checks those citations. No paid AI API is
+    used. If the app does not support MCP sampling, the sources are returned
+    with instructions for you to write the synthesis yourself.
+    """
+    subject = _normalize_text(topic)
+    requested = {"topic": subject, "data_type": "research_synthesis"}
+    if not subject:
+        return _validation_response("Please provide a research topic.", requested)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 15:
+        return _validation_response("Invalid limit. Provide an integer from 1 through 15.", requested)
+    year = year_from or None
+
+    published = search_finance_research(subject, year_from=year, limit=limit)
+    preprints = search_finance_preprints(subject, limit=max(1, limit // 2)) if include_preprints else None
+    sources = _synthesis_sources(published, preprints)
+
+    components = [{"tool": "search_finance_research", "status": published.get("coverage_audit", {}).get("status")}]
+    errors = [published["error"]] if published.get("error") else []
+    if preprints is not None:
+        components.append({"tool": "search_finance_preprints", "status": preprints.get("coverage_audit", {}).get("status")})
+        if preprints.get("error"):
+            errors.append(preprints["error"])
+    status = "unavailable" if not sources else ("partial" if errors else "complete")
+    audit = {
+        "status": status,
+        "requested": requested,
+        "returned": {"row_count": len(sources)},
+        "missing": {"reasons": errors} if errors else {},
+        "component_audits": components,
+        "primary_source": {
+            "provider": "OpenAlex" + (" and arXiv" if include_preprints else ""),
+            "retrieval_method": "Finance Data and Lit MCP",
+            "status": "primary_workflow_source",
+            "retrieval_date": date.today().isoformat(),
+        },
+    }
+    response: dict[str, Any] = {"topic": subject, "sources": sources, "coverage_audit": audit}
+    if status != "complete":
+        response["fallback_recommendation"] = _fallback_recommendation("literature")
+    if not sources:
+        response["synthesis"] = None
+        response["synthesis_status"] = "no_sources"
+        return response
+
+    agent_instructions = (
+        "Write the synthesis yourself from these sources only, following these rules:\n"
+        + SYNTHESIS_SYSTEM_PROMPT
+        + "\nUse the headings: Key themes; Main findings; Points of disagreement; Gaps for further research."
+    )
+    if not _client_supports_sampling(ctx):
+        response.update({
+            "synthesis": None,
+            "synthesis_status": "client_does_not_support_sampling",
+            "instructions_for_agent": agent_instructions,
+        })
+        return response
+
+    try:
+        result = await ctx.session.create_message(
+            messages=[
+                mcp_types.SamplingMessage(
+                    role="user",
+                    content=mcp_types.TextContent(type="text", text=_synthesis_request(subject, sources)),
+                )
+            ],
+            max_tokens=SYNTHESIS_MAX_TOKENS,
+            system_prompt=SYNTHESIS_SYSTEM_PROMPT,
+            include_context="none",
+            temperature=0.2,
+        )
+        text = _sampled_text(result)
+    except Exception as exc:  # declined by the user, or the client failed
+        response.update({
+            "synthesis": None,
+            "synthesis_status": "sampling_declined_or_failed",
+            "sampling_error": str(exc),
+            "instructions_for_agent": agent_instructions,
+        })
+        return response
+
+    if not text:
+        response.update({
+            "synthesis": None,
+            "synthesis_status": "sampling_returned_no_text",
+            "instructions_for_agent": agent_instructions,
+        })
+        return response
+
+    response.update({
+        "synthesis": text,
+        "synthesis_status": "generated",
+        "synthesis_by": {
+            "method": "MCP sampling: written by the connected app's own model; no paid API was called by this server",
+            "model": getattr(result, "model", None),
+        },
+        "citation_check": _check_citations(text, sources),
+    })
+    return response
+
+
 @mcp.tool(
     title="Get Research Workflow",
     annotations=ToolAnnotations(

@@ -27,7 +27,7 @@ class PromptRegistrationTests(unittest.TestCase):
             _render("peer_comparison", {"tickers": "AAPL, MSFT"}),
         ]
         for text in rendered:
-            referenced = re.findall(r"`((?:get|search|check|compare)_[a-z_]+)`", text)
+            referenced = re.findall(r"`((?:get|search|check|compare|synthesize)_[a-z_]+)`", text)
             self.assertTrue(referenced, "Prompt references no tools")
             for name in referenced:
                 self.assertIn(name, tool_names, f"Prompt references unknown tool {name}")

@@ -79,6 +79,7 @@ def finance_literature_review(topic: str, year_from: int = 0, include_preprints:
     subject = _clean_text(topic, "a research topic")
     year = int(year_from or 0)
     year_arg = f", year_from {year}" if year else ""
+    preprint_arg = "" if include_preprints else ", include_preprints false"
     preprint_step = (
         f"3. `search_finance_preprints` for \"{subject}\" with limit 10. Keep these in a\n"
         "   separate \"Preprints (not peer reviewed)\" section.\n"
@@ -96,6 +97,11 @@ Workflow:
    once. Note open-access journals that DOAJ does not list; absence from DOAJ
    does not by itself mean a journal is illegitimate (many subscription
    journals are not in DOAJ).
+5. `synthesize_research` for "{subject}"{year_arg}{preprint_arg}. If
+   `synthesis_status` is `generated` and `citation_check.passed` is true, use
+   its synthesis as your draft and replace its source IDs with full
+   citations. If it was not generated, or the citation check failed, write
+   the review yourself from its `sources`, following `instructions_for_agent`.
 
 Output: key themes, main findings with citations (authors, year, journal,
 DOI), points of disagreement, gaps for further research, and a "Data gaps"

@@ -14,6 +14,11 @@ briefs, literature reviews, peer comparisons), and **guardrails** in every
 response that flag missing data and require your approval before any
 supplementary source is used.
 
+**No AI API costs:** the server never calls a paid AI service and needs no AI
+API key. Its one AI-assisted tool, `synthesize_research`, asks the AI app you
+are already using to write the text (MCP sampling), and returns plain sources
+when the app does not support that.
+
 ```
 You ──► AI agent ──► get_research_workflow ──► recipe (which tools, in what order)
             │
@@ -22,8 +27,8 @@ You ──► AI agent ──► get_research_workflow ──► recipe (which t
             └──► answer with gaps labelled ──► "Use <source> as a supplement?" ──► You decide
 ```
 
-See [How the agentic flow works](docs/AGENTIC_FLOW.md) for a step-by-step
-diagram, a worked example and the roadmap.
+See [How the agentic flow works](docs/AGENTIC_FLOW.md) for step-by-step
+diagrams, a worked example, what has been built and ideas for extending it.
 
 ## Data sources
 
@@ -65,6 +70,12 @@ company's latest annual period. Their `coverage_audit` only checks the fields
 they report, so blank line items in older periods do not mark a result
 partial; the underlying tool audits remain visible in `component_audits`.
 
+Research synthesis: `synthesize_research` searches OpenAlex and arXiv, asks the
+connected app's own model for a short synthesis citing source IDs ([P1],
+[R1]) via MCP sampling, and checks those citations. Where sampling is not
+supported (for example ChatGPT), it returns the numbered sources with
+instructions for the agent instead. No paid AI API is used.
+
 `get_historical_prices` returns traded prices (adjusted for splits only) in
 `open`/`high`/`low`/`close`, and Yahoo's dividend-adjusted close in `adj_close`.
 
@@ -100,7 +111,7 @@ never blend Alpha Vantage into Yahoo Finance values).
 | Prompt                      | Arguments                                   | Workflow                                                                 |
 | --------------------------- | ------------------------------------------- | ------------------------------------------------------------------------ |
 | `company_research_brief`    | `ticker`, optional `focus`                  | `get_company_profile`, price history, actions, holders, news, research   |
-| `finance_literature_review` | `topic`, `year_from`, `include_preprints`   | OpenAlex search, full records, arXiv preprints, DOAJ journal checks       |
+| `finance_literature_review` | `topic`, `year_from`, `include_preprints`   | OpenAlex search, full records, arXiv preprints, DOAJ checks, synthesis   |
 | `peer_comparison`           | `tickers` (2-10, comma-separated)           | `compare_peers`, then a table and observations using server-computed ratios |
 
 Clients that only support tools (for example ChatGPT) can use the same
