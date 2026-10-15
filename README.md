@@ -102,13 +102,22 @@ data automatically. Clients must obtain explicit user confirmation before using
 the recommendation, must label supplementary observations separately, and must
 never overwrite primary-source values while differences remain unreconciled.
 
+Recommendations follow the listing market of the requested tickers, read from
+the Yahoo Finance suffix (see `markets.py`). US tickers keep the SEC EDGAR
+recommendations; SGX (`.SI`), HKEX (`.HK`), LSE (`.L`), JPX (`.T`), ASX (`.AX`),
+TSX (`.TO`, `.V`), NSE/BSE (`.NS`, `.BO`) and KRX (`.KS`, `.KQ`) tickers point to
+that market's disclosure system and issuer annual reports. Other suffixes get a
+generic home-exchange recommendation, and requests spanning several markets
+return a `by_market` breakdown.
+
 The audit records the primary provider, retrieval method, and retrieval date.
 Future supplementary observations should also retain their provider, underlying
 source, stable URL/accession/DOI, reporting or measurement date, retrieval date,
 retrieval method, source status, and any transformation or reconciliation note.
 
 Historical ownership is not supplied by `get_holders`; requesting it returns
-`not_supported` and recommends the appropriate SEC EDGAR filings. A DEF 14A
+`not_supported` and recommends the appropriate SEC EDGAR filings (or the
+home-market disclosures for non-US listings). A DEF 14A
 table must retain its stated measurement date, 13F positions must not be treated
 as a complete shareholder register, and truncated holder lists must not be used
 to calculate total institutional ownership. Any later SEC workflow must verify

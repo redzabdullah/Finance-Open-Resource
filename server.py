@@ -23,6 +23,7 @@ from mcp.server.fastmcp import FastMCP, Context
 from mcp.types import ToolAnnotations
 
 from alphavantage_client import request as alphavantage_request
+from markets import market_fallback
 from prompts import WORKFLOWS, register_prompts, render_workflow
 
 
@@ -191,7 +192,9 @@ def _coverage_tool(data_type: str, provider: str, collection: str | None = None,
             if validation:
                 response["error_type"] = "validation"
             if status != "complete":
-                fallback = FALLBACK_SOURCES.get(data_type)
+                fallback = market_fallback(
+                    data_type, FALLBACK_SOURCES.get(data_type), requested.get("tickers")
+                )
                 if fallback:
                     response["fallback_recommendation"] = {
                         "available": True,
