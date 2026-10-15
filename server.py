@@ -23,6 +23,9 @@ from mcp.server.fastmcp import FastMCP, Context
 from mcp.types import ToolAnnotations
 
 from alphavantage_client import request as alphavantage_request
+from crunchbase_client import api_key_configured as crunchbase_key_configured
+from crunchbase_client import entity_path as crunchbase_path
+from crunchbase_client import request as crunchbase_request
 from markets import market_fallback, market_for
 from prompts import WORKFLOWS, register_prompts, render_workflow
 
@@ -80,6 +83,15 @@ FALLBACK_SOURCES = {
             {"source": "Reputable market-data vendor", "purpose": "Price history with adjustment methodology stated"},
         ],
     },
+    "private_funding": {
+        "recommended_source": "Company filings and business registries",
+        "reason": "Crunchbase did not supply all requested private-market data (amounts, valuations or deals may be undisclosed).",
+        "suggested_sources": [
+            {"source": "Company filings", "purpose": "Share allotments, capital changes and audited accounts filed by the company"},
+            {"source": "Business registries (e.g. ACRA, Companies House, SEC Form D)", "purpose": "Registered share capital, allotments and exempt-offering notices"},
+            {"source": "Press releases", "purpose": "Announced rounds, investors and acquisition terms from the company or investors"},
+        ],
+    },
 }
 
 
@@ -125,6 +137,9 @@ def _coverage_tool(data_type: str, provider: str, collection: str | None = None,
             if not isinstance(response, dict):
                 return response
 
+            # Tools whose row limit depends on arguments or spans several
+            # provider calls report truncation through this private flag.
+            truncated = bool(response.pop("_truncated", False))
             error = response.get("error")
             validation = bool(error and error.startswith(("Please ", "Invalid ", "Too many ")))
             unsupported = bool(error and error.startswith("Unsupported "))
@@ -152,7 +167,7 @@ def _coverage_tool(data_type: str, provider: str, collection: str | None = None,
                 status = "unavailable"
             elif isinstance(rows, list) and any(isinstance(row, dict) and row.get("error") for row in rows):
                 status = "partial" if any(isinstance(row, dict) and not row.get("error") for row in rows) else "unavailable"
-            elif limit is not None and isinstance(rows, list) and len(rows) >= limit:
+            elif truncated or (limit is not None and isinstance(rows, list) and len(rows) >= limit):
                 status = "truncated"
             elif missing_value_fields:
                 status = "partial"
@@ -197,9 +212,12 @@ def _coverage_tool(data_type: str, provider: str, collection: str | None = None,
                 missing["reason"] = "The connector limit may have excluded additional observations."
             if response.get("error_type") == "quota_exhausted":
                 missing["reason"] = (
-                    f"Alpha Vantage {response.get('quota', 'shared')} limit was hit; "
+                    f"{provider} {response.get('quota', 'shared')} limit was hit; "
                     f"capacity resets at {response.get('resets_at', 'an unknown time')}."
                 )
+            elif response.get("error_type") == "auth_error":
+                # A rejected key says nothing about the data; never imply "none exist".
+                missing["reason"] = response["error"]
 
             response["coverage_audit"] = {
                 "status": status,
@@ -215,7 +233,8 @@ def _coverage_tool(data_type: str, provider: str, collection: str | None = None,
             }
             if validation:
                 response["error_type"] = "validation"
-            if status != "complete":
+            # A rejected API key needs a new key, not a supplementary source.
+            if status != "complete" and response.get("error_type") != "auth_error":
                 response["fallback_recommendation"] = _fallback_recommendation(
                     data_type, requested.get("tickers")
                 )
@@ -675,6 +694,343 @@ def get_news_sentiment_av(tickers_or_topics: str = "") -> dict:
         for item in feed[:50]
     ]
     return {"query": query, "news": news}
+
+
+# Crunchbase is an opt-in, licensed private-market source. Its tools are
+# registered only when CRUNCHBASE_API_KEY is set (see register_crunchbase_tools)
+# and, like Alpha Vantage, are never blended into Yahoo Finance values.
+CB_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+)
+CB_CARD_LIMIT = 100  # Crunchbase card lookups return at most 100 rows.
+CB_SEARCH_LIMIT = 10
+NOT_DISCLOSED = "not disclosed"
+_CB_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,199}$")
+_CB_ORGANIZATION_FIELDS = [
+    "identifier",
+    "short_description",
+    "location_identifiers",
+    "founded_on",
+    "ipo_status",
+    "stock_symbol",
+    "stock_exchange_symbol",
+]
+_CB_ROUND_FIELDS = [
+    "identifier",
+    "announced_on",
+    "investment_type",
+    "money_raised",
+    "lead_investor_identifiers",
+    "post_money_valuation",
+]
+_CB_ACQUISITION_FIELDS = [
+    "identifier",
+    "acquirer_identifier",
+    "acquiree_identifier",
+    "announced_on",
+    "acquisition_type",
+    "status",
+    "price",
+]
+_CB_INVESTMENT_FIELDS = [
+    "identifier",
+    "announced_on",
+    "organization_identifier",
+    "funding_round_identifier",
+    "funding_round_investment_type",
+    "money_invested",
+    "is_lead_investor",
+]
+
+
+def _cb_request(method: str, path: str, params: dict | None = None, body: dict | None = None) -> dict:
+    try:
+        return crunchbase_request(method, path, params, body)
+    except Exception as exc:
+        return {"error": f"Could not fetch Crunchbase data: {exc}", "error_type": "provider_error"}
+
+
+def _cb_name(identifier: Any) -> str | None:
+    return identifier.get("value") if isinstance(identifier, dict) else None
+
+
+def _cb_date(value: Any) -> str | None:
+    """Read a plain date string or a DateWithPrecision object."""
+    if isinstance(value, dict):
+        return value.get("value")
+    return value if isinstance(value, str) and value else None
+
+
+def _cb_money(value: Any, name: str) -> dict:
+    """Return a money field and its disclosure status; missing is never zero."""
+    if isinstance(value, dict) and value.get("value") is not None:
+        return {
+            name: {
+                "value": value.get("value"),
+                "currency": value.get("currency"),
+                "value_usd": value.get("value_usd"),
+            },
+            f"{name}_status": "disclosed",
+        }
+    return {name: None, f"{name}_status": NOT_DISCLOSED}
+
+
+def _cb_entity_id(raw: Any, label: str) -> tuple[str | None, dict | None]:
+    value = _normalize_text(raw)
+    if not value:
+        return None, {"error": f"Please provide {label} as a Crunchbase permalink or UUID (see search_organization_cb)."}
+    if not _CB_ID_PATTERN.fullmatch(value):
+        return None, {"error": f"Invalid {label} '{value}'. Use the permalink or UUID returned by search_organization_cb."}
+    return value.lower(), None
+
+
+def _cb_card(collection: str, entity_id: str, card_id: str, field_ids: list[str], limit: int = CB_CARD_LIMIT, order: str | None = None):
+    """Fetch one card of an entity; returns (entity properties, rows, error)."""
+    params = {"card_field_ids": ",".join(field_ids), "limit": str(limit)}
+    if order:
+        params["order"] = order
+    payload = _cb_request("GET", crunchbase_path("entities", collection, entity_id, "cards", card_id), params)
+    if payload.get("error"):
+        return None, None, payload
+    rows = (payload.get("cards") or {}).get(card_id) or []
+    return payload.get("properties") or {}, [row for row in rows if isinstance(row, dict)], None
+
+
+def _cb_entity_summary(properties: dict, fallback_id: str) -> dict:
+    identifier = properties.get("identifier") or {}
+    return {
+        "name": identifier.get("value") or fallback_id,
+        "permalink": identifier.get("permalink") or fallback_id,
+    }
+
+
+def _cb_sorted_by_date(rows: list[dict]) -> list[dict]:
+    """Oldest first; undated rows last."""
+    return sorted(rows, key=lambda row: (row.get("date") is None, row.get("date") or ""))
+
+
+@_coverage_tool("private_funding", "Crunchbase", "results", CB_SEARCH_LIMIT)
+def search_organization_cb(query: str = "") -> dict:
+    """Find Crunchbase organizations by name; licensed, opt-in private-market data.
+
+    Returns up to 10 candidates with permalink and UUID (pass either to the
+    other ``_cb`` tools), short description, country, founded date and IPO
+    status. Public or delisted companies also carry ``stock_symbol`` and
+    ``stock_exchange`` for hand-off to the Yahoo Finance tools; Yahoo tickers
+    for non-US listings need the exchange suffix (for example D05.SI).
+    Never merge Crunchbase figures into Yahoo Finance figures.
+    """
+    name = _normalize_text(query)
+    if not name:
+        return {"error": "Please provide an organization name to search for."}
+    if len(name) > 200:
+        return {"error": "Invalid query: use at most 200 characters."}
+    payload = _cb_request("POST", "/searches/organizations", body={
+        "field_ids": _CB_ORGANIZATION_FIELDS,
+        "query": [{
+            "type": "predicate",
+            "field_id": "identifier",
+            "operator_id": "contains",
+            "values": [name],
+        }],
+        "order": [{"field_id": "rank_org", "sort": "asc", "nulls": "last"}],
+        "limit": CB_SEARCH_LIMIT,
+    })
+    if payload.get("error"):
+        return payload
+
+    results = []
+    for entity in (payload.get("entities") or [])[:CB_SEARCH_LIMIT]:
+        if not isinstance(entity, dict):
+            continue
+        properties = entity.get("properties") or {}
+        identifier = properties.get("identifier") or {}
+        country = next(
+            (
+                location.get("value")
+                for location in properties.get("location_identifiers") or []
+                if isinstance(location, dict) and location.get("location_type") == "country"
+            ),
+            None,
+        )
+        candidate = {
+            "name": identifier.get("value"),
+            "permalink": identifier.get("permalink"),
+            "uuid": entity.get("uuid") or identifier.get("uuid"),
+            "short_description": properties.get("short_description"),
+            "country": country,
+            "founded_on": _cb_date(properties.get("founded_on")),
+            "ipo_status": properties.get("ipo_status"),
+        }
+        symbol = _cb_name(properties.get("stock_symbol"))
+        if symbol:
+            candidate["stock_symbol"] = symbol
+            candidate["stock_exchange"] = properties.get("stock_exchange_symbol")
+        results.append(candidate)
+
+    response = {"query": name, "results": results}
+    if any("stock_symbol" in candidate for candidate in results):
+        response["note"] = (
+            "stock_symbol is Crunchbase's listing symbol. Use it with the Yahoo "
+            "Finance tools (adding the exchange suffix for non-US listings) and "
+            "report Yahoo and Crunchbase figures separately."
+        )
+    return response
+
+
+@_coverage_tool("private_funding", "Crunchbase", "funding_rounds")
+def get_funding_rounds_cb(organization: str = "") -> dict:
+    """Return an organization's Crunchbase funding rounds, oldest first.
+
+    ``organization`` is a permalink or UUID from ``search_organization_cb``.
+    Each round has its announced date, round type, amount and currency, lead
+    investors and post-money valuation. Undisclosed amounts or valuations are
+    ``null`` with ``*_status: "not disclosed"``; they are never zero.
+    """
+    entity_id, error = _cb_entity_id(organization, "an organization")
+    if error:
+        return error
+    properties, rows, error = _cb_card("organizations", entity_id, "raised_funding_rounds", _CB_ROUND_FIELDS)
+    if error:
+        return error
+
+    rounds = [
+        {
+            "date": _cb_date(row.get("announced_on")),
+            "round": _cb_name(row.get("identifier")),
+            "round_type": row.get("investment_type"),
+            **_cb_money(row.get("money_raised"), "amount"),
+            "lead_investors": [
+                name for name in (_cb_name(item) for item in row.get("lead_investor_identifiers") or []) if name
+            ],
+            **_cb_money(row.get("post_money_valuation"), "post_money_valuation"),
+        }
+        for row in rows
+    ]
+    return {
+        "organization": _cb_entity_summary(properties, entity_id),
+        "funding_rounds": _cb_sorted_by_date(rounds),
+        "_truncated": len(rows) >= CB_CARD_LIMIT,
+    }
+
+
+@_coverage_tool("private_funding", "Crunchbase", "acquisitions")
+def get_acquisitions_cb(organization: str = "") -> dict:
+    """Return Crunchbase acquisitions where the organization was acquirer or acquiree.
+
+    Each row has a ``role`` (``acquirer`` or ``acquiree``), the counterparty
+    names, announced date, type, status and price. An undisclosed price is
+    ``null`` with ``price_status: "not disclosed"``, never zero.
+    """
+    entity_id, error = _cb_entity_id(organization, "an organization")
+    if error:
+        return error
+
+    properties = {}
+    acquisitions = []
+    errors = []
+    truncated = False
+    for role, card_id in (("acquirer", "acquirer_acquisitions"), ("acquiree", "acquiree_acquisitions")):
+        card_properties, rows, card_error = _cb_card("organizations", entity_id, card_id, _CB_ACQUISITION_FIELDS)
+        if card_error:
+            if card_error.get("error_type") == "auth_error":
+                return card_error
+            errors.append((role, card_error))
+            continue
+        properties = properties or card_properties
+        truncated = truncated or len(rows) >= CB_CARD_LIMIT
+        acquisitions.extend(
+            {
+                "role": role,
+                "date": _cb_date(row.get("announced_on")),
+                "acquirer": _cb_name(row.get("acquirer_identifier")),
+                "acquiree": _cb_name(row.get("acquiree_identifier")),
+                "acquisition_type": row.get("acquisition_type"),
+                "status": row.get("status"),
+                **_cb_money(row.get("price"), "price"),
+            }
+            for row in rows
+        )
+
+    if len(errors) == 2:
+        return errors[0][1]
+    acquisitions = _cb_sorted_by_date(acquisitions)
+    # A failed card is kept as an error row so the audit reports "partial".
+    acquisitions.extend({"role": role, "error": card_error["error"]} for role, card_error in errors)
+    return {
+        "organization": _cb_entity_summary(properties, entity_id),
+        "acquisitions": acquisitions,
+        "_truncated": truncated,
+    }
+
+
+@_coverage_tool("private_funding", "Crunchbase", "investments")
+def get_investor_portfolio_cb(investor: str = "", limit: int = 25) -> dict:
+    """Return an investor's most recent Crunchbase investments (1-100).
+
+    ``investor`` is an organization or person permalink or UUID. Each row has
+    the announced date, investee, funding round, round type, whether the
+    investor led it, and the amount invested; undisclosed amounts are
+    ``null`` with ``amount_status: "not disclosed"``, never zero.
+    """
+    entity_id, error = _cb_entity_id(investor, "an investor")
+    if error:
+        return error
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= CB_CARD_LIMIT:
+        return {"error": f"Invalid limit. Provide an integer from 1 to {CB_CARD_LIMIT}."}
+
+    investor_kind = "organization"
+    properties, rows, error = _cb_card(
+        "organizations", entity_id, "participated_investments", _CB_INVESTMENT_FIELDS, limit, "announced_on desc"
+    )
+    if error and error.get("http_status") == 404:
+        investor_kind = "person"
+        properties, rows, error = _cb_card(
+            "people", entity_id, "participated_investments", _CB_INVESTMENT_FIELDS, limit, "announced_on desc"
+        )
+    if error:
+        return error
+
+    investments = [
+        {
+            "date": _cb_date(row.get("announced_on")),
+            "organization": _cb_name(row.get("organization_identifier")),
+            "organization_permalink": (row.get("organization_identifier") or {}).get("permalink"),
+            "funding_round": _cb_name(row.get("funding_round_identifier")),
+            "round_type": row.get("funding_round_investment_type"),
+            "is_lead_investor": row.get("is_lead_investor"),
+            **_cb_money(row.get("money_invested"), "amount"),
+        }
+        for row in rows
+    ]
+    return {
+        "investor": {**_cb_entity_summary(properties, entity_id), "investor_kind": investor_kind},
+        "investments": investments,
+        "_truncated": len(rows) >= limit,
+    }
+
+
+CB_TOOLS = {
+    "search_organization_cb": ("Search Organization (Crunchbase)", search_organization_cb),
+    "get_funding_rounds_cb": ("Get Funding Rounds (Crunchbase)", get_funding_rounds_cb),
+    "get_acquisitions_cb": ("Get Acquisitions (Crunchbase)", get_acquisitions_cb),
+    "get_investor_portfolio_cb": ("Get Investor Portfolio (Crunchbase)", get_investor_portfolio_cb),
+}
+
+
+def register_crunchbase_tools(target: FastMCP) -> bool:
+    """Register the _cb tools only when CRUNCHBASE_API_KEY is configured."""
+    if not crunchbase_key_configured():
+        return False
+    for name, (title, function) in CB_TOOLS.items():
+        target.tool(name=name, title=title, annotations=CB_TOOL_ANNOTATIONS)(function)
+    return True
+
+
+CRUNCHBASE_ENABLED = register_crunchbase_tools(mcp)
 
 
 @mcp.tool(
@@ -2267,15 +2623,18 @@ def get_research_workflow(
     focus: str = "",
     year_from: int = 0,
     include_preprints: bool = True,
+    company_or_ticker: str = "",
 ) -> dict:
     """Return step-by-step instructions for a multi-tool research workflow.
 
     Call this first when the user asks for a company research brief, a finance
-    literature review, or a peer comparison, then follow the returned
+    literature review, a peer comparison, or a company's lifecycle (funding
+    history through to public-market performance), then follow the returned
     instructions exactly, including the coverage rules. Workflows:
     ``company_research_brief`` (ticker, optional focus),
     ``finance_literature_review`` (topic, optional year_from and
-    include_preprints) and ``peer_comparison`` (tickers, comma-separated).
+    include_preprints), ``peer_comparison`` (tickers, comma-separated) and
+    ``company_lifecycle`` (company_or_ticker).
     This tool fetches no market data itself.
     """
     name = _normalize_text(workflow).lower()
@@ -2293,6 +2652,8 @@ def get_research_workflow(
             focus=focus,
             year_from=year_from,
             include_preprints=include_preprints,
+            company_or_ticker=company_or_ticker,
+            crunchbase_enabled=CRUNCHBASE_ENABLED,
         )
     except (TypeError, ValueError) as exc:
         message = str(exc)
@@ -2302,7 +2663,7 @@ def get_research_workflow(
     return {"workflow": name, "instructions": instructions}
 
 
-register_prompts(mcp)
+register_prompts(mcp, crunchbase_enabled=CRUNCHBASE_ENABLED)
 
 
 if __name__ == "__main__":

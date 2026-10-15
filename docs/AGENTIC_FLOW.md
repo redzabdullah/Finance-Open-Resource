@@ -64,13 +64,14 @@ sequenceDiagram
 
 ### Recipes: workflow prompts and the workflow tool
 
-Three recipes live in [`prompts.py`](../prompts.py):
+Four recipes live in [`prompts.py`](../prompts.py):
 
 | Workflow | What the agent is told to do |
 | --- | --- |
 | `company_research_brief` | Company profile with server-computed ratios, one-year price history, dividends and splits, major holders, news, and related academic research, then a "Data gaps" section |
 | `finance_literature_review` | Search published research (OpenAlex), read the top papers, search preprints (arXiv) separately, check journals against DOAJ, then call `synthesize_research` for a cited draft |
 | `peer_comparison` | Call `compare_peers`, report its server-computed figures without recalculating, and explain any gaps |
+| `company_lifecycle` | Resolve the company in Crunchbase, fetch its funding rounds and acquisitions, then, if it is listed, call `get_company_profile` and `get_historical_prices`. Report "Private-market history (Crunchbase)" and "Public-market performance (Yahoo Finance)" as separate sections, followed by "Data gaps" |
 
 The recipes reach the agent in two ways, because AI clients differ:
 
@@ -84,6 +85,25 @@ A recipe is used when the agent picks it. Asking explicitly ("use the peer
 comparison workflow for D05.SI, O39.SI, U11.SI") makes that certain; natural
 requests such as "compare DBS and OCBC" will often trigger it, because the tool
 description tells the agent when to use it, but the choice is the agent's.
+
+The `company_lifecycle` recipe adapts to the server. When the opt-in
+Crunchbase tools are not registered (no `CRUNCHBASE_API_KEY`), it tells the
+agent to say the Crunchbase module is not enabled and continue with Yahoo
+Finance data only, so it never names a tool the server lacks.
+
+```mermaid
+flowchart TD
+    A[company_or_ticker] --> B{Crunchbase enabled?}
+    B -- yes --> C[search_organization_cb]
+    C --> D[get_funding_rounds_cb + get_acquisitions_cb]
+    D --> E{stock_symbol?}
+    B -- no --> N[Say: Crunchbase module not enabled] --> T[Ask for ticker if needed]
+    E -- yes --> F[get_company_profile + get_historical_prices]
+    T --> F
+    E -- no --> G[Company is private: no public-market data]
+    F --> H[Separate sections: Crunchbase / Yahoo Finance / Data gaps]
+    G --> H
+```
 
 ### Guardrails: the coverage contract
 
@@ -196,7 +216,9 @@ Request: *"Use the peer comparison workflow for D05.SI, O39.SI, U11.SI."*
 - It does not call any paid AI API or need an AI API key. AI-written text
   only ever comes from your own app's model via MCP sampling.
 - It does not fetch supplementary sources without your confirmation.
-- It does not merge Alpha Vantage figures into Yahoo Finance figures.
+- It does not merge Alpha Vantage or Crunchbase figures into Yahoo Finance
+  figures.
+- It does not report an undisclosed funding amount or valuation as zero.
 - It does not give investment advice. Recipes instruct the agent not to
   either.
 
@@ -209,6 +231,7 @@ Request: *"Use the peer comparison workflow for D05.SI, O39.SI, U11.SI."*
 | – | Market-aware fallback recommendations (SGX, HKEX, LSE, JPX, ASX, TSX, NSE/BSE, KRX) | Done |
 | 2 | Composite tools (`compare_peers`, `get_company_profile`) that run fixed multi-step chains and compute ratios in code, with a combined audit that only flags gaps in the data actually used | Done |
 | 3 | Model in the loop: `synthesize_research` asks the app's own model for a cited synthesis via MCP sampling, checks its citations, and falls back to plain sources where sampling is unsupported | Done |
+| – | Opt-in Crunchbase tools (`_cb`) and the `company_lifecycle` recipe for private-market history alongside public-market data | Done |
 
 Steps 1 and 2 make the agent reliable by giving it good recipes and
 dependable building blocks. Step 3 shows the server itself working with a

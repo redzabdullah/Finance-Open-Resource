@@ -144,10 +144,81 @@ more meaningful.
 {COVERAGE_RULES}"""
 
 
+CRUNCHBASE_RULES = """\
+Crunchbase rules:
+- Crunchbase (`*_cb` tools) is a licensed private-market source. Report its
+  figures in their own section, labelled "Crunchbase", and never merge them
+  into Yahoo Finance figures.
+- An amount or valuation marked "not disclosed" is unknown, not zero.
+- Quote only the rounds and deals needed for the answer; do not reproduce
+  Crunchbase data in bulk."""
+
+
+def company_lifecycle(company_or_ticker: str, crunchbase_enabled: bool = False) -> str:
+    """Build a private-to-public lifecycle workflow for one company."""
+    subject = _clean_text(company_or_ticker, "a company name or ticker")
+    if not crunchbase_enabled:
+        return f"""\
+Trace the lifecycle of {subject}: private-market history and public-market
+performance.
+
+The Crunchbase module is not enabled on this server, so funding rounds,
+investors and acquisitions are unavailable. Tell the user this first, then
+continue with Yahoo Finance data only.
+
+Workflow:
+1. If "{subject}" is not a Yahoo Finance ticker, ask the user for the ticker
+   (with the exchange suffix for non-US listings, for example D05.SI). If the
+   company is not listed, say that no public-market data applies and stop.
+2. `get_company_profile` for the ticker. Report the figures as returned.
+3. `get_historical_prices` for the ticker with period `max`, interval `1mo`:
+   describe performance since listing.
+
+Output: a "Private-market history" section stating that the Crunchbase
+module is not enabled, a "Public-market performance (Yahoo Finance)"
+section, and a final "Data gaps" section listing every result whose
+coverage status was not `complete`.
+
+{COVERAGE_RULES}"""
+
+    return f"""\
+Trace the lifecycle of {subject}: private-market history and public-market
+performance.
+
+Workflow:
+1. `search_organization_cb` with query "{subject}". Pick the candidate that
+   matches; if several plausibly match, ask the user which one. If the input
+   looks like a ticker and nothing matches, search again by company name.
+2. `get_funding_rounds_cb` with the candidate's permalink: rounds with date,
+   type, amount, lead investors and post-money valuation.
+3. `get_acquisitions_cb` with the same permalink: deals as acquirer and as
+   acquiree.
+4. If the candidate has a `stock_symbol` (it is public or was listed),
+   convert it to a Yahoo Finance ticker (add the exchange suffix for non-US
+   listings, for example D05.SI for SGX) and:
+   a. `get_company_profile` for the ticker. Report the figures as returned.
+   b. `get_historical_prices` for the ticker with period `max`, interval
+      `1mo`: describe performance since listing.
+   If it has no stock symbol, say the company is private and skip this step.
+
+Output, as separate, clearly labelled sections:
+- "Private-market history (Crunchbase)": a timeline of funding rounds and
+  acquisitions.
+- "Public-market performance (Yahoo Finance)": the profile and price history,
+  or a statement that the company is not listed.
+- "Data gaps": every result whose coverage status was not `complete`,
+  including undisclosed amounts and valuations.
+
+{CRUNCHBASE_RULES}
+
+{COVERAGE_RULES}"""
+
+
 WORKFLOWS = {
     "company_research_brief": "Multi-tool research brief for one ticker (needs ticker; optional focus).",
     "finance_literature_review": "Review of published research and preprints (needs topic; optional year_from, include_preprints).",
     "peer_comparison": "Side-by-side comparison of 2-10 tickers with server-computed ratios (needs tickers, comma-separated).",
+    "company_lifecycle": "Private-market history (Crunchbase, if enabled) and public-market performance for one company (needs company_or_ticker).",
 }
 
 
@@ -159,6 +230,8 @@ def render_workflow(
     focus: str = "",
     year_from: int = 0,
     include_preprints: bool = True,
+    company_or_ticker: str = "",
+    crunchbase_enabled: bool = False,
 ) -> str:
     """Render a named workflow; raises ValueError on unknown names or bad arguments."""
     name = (workflow or "").strip().lower()
@@ -168,13 +241,23 @@ def render_workflow(
         return finance_literature_review(topic, year_from, include_preprints)
     if name == "peer_comparison":
         return peer_comparison(tickers)
+    if name == "company_lifecycle":
+        return company_lifecycle(company_or_ticker, crunchbase_enabled)
     raise ValueError(
         f"Invalid workflow '{workflow}'. Choose one of: {', '.join(sorted(WORKFLOWS))}."
     )
 
 
-def register_prompts(mcp) -> None:
-    """Attach the workflow prompts to a FastMCP server."""
+def register_prompts(mcp, crunchbase_enabled: bool = False) -> None:
+    """Attach the workflow prompts to a FastMCP server.
+
+    ``crunchbase_enabled`` must match whether the server registered the
+    ``_cb`` tools, so the lifecycle prompt never names a missing tool.
+    """
+
+    def lifecycle_prompt(company_or_ticker: str) -> str:
+        return company_lifecycle(company_or_ticker, crunchbase_enabled)
+
     mcp.prompt(
         name="company_research_brief",
         title="Company Research Brief",
@@ -190,3 +273,8 @@ def register_prompts(mcp) -> None:
         title="Peer Comparison",
         description="Side-by-side comparison of 2-10 tickers on size, profitability and price change.",
     )(peer_comparison)
+    mcp.prompt(
+        name="company_lifecycle",
+        title="Company Lifecycle",
+        description="Private-market history (Crunchbase, when enabled) and public-market performance for one company.",
+    )(lifecycle_prompt)

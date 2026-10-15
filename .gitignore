@@ -23,6 +23,10 @@ htmlcov/
 .env.*
 .av_quota_state.json
 
+# Crunchbase data is licensed; never commit cached responses
+.crunchbase_cache/
+crunchbase_cache/
+
 # Editor and operating-system files
 .idea/
 .vscode/

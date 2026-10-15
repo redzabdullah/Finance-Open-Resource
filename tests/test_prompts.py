@@ -16,7 +16,7 @@ class PromptRegistrationTests(unittest.TestCase):
         listed = {prompt.name for prompt in asyncio.run(server.mcp.list_prompts())}
         self.assertEqual(
             listed,
-            {"company_research_brief", "finance_literature_review", "peer_comparison"},
+            {"company_research_brief", "finance_literature_review", "peer_comparison", "company_lifecycle"},
         )
 
     def test_prompts_only_reference_existing_tools(self):
@@ -25,6 +25,7 @@ class PromptRegistrationTests(unittest.TestCase):
             _render("company_research_brief", {"ticker": "AAPL"}),
             _render("finance_literature_review", {"topic": "momentum"}),
             _render("peer_comparison", {"tickers": "AAPL, MSFT"}),
+            _render("company_lifecycle", {"company_or_ticker": "AAPL"}),
         ]
         for text in rendered:
             referenced = re.findall(r"`((?:get|search|check|compare|synthesize)_[a-z_]+)`", text)
@@ -37,6 +38,7 @@ class PromptRegistrationTests(unittest.TestCase):
             ("company_research_brief", {"ticker": "AAPL"}),
             ("finance_literature_review", {"topic": "momentum"}),
             ("peer_comparison", {"tickers": "AAPL, MSFT"}),
+            ("company_lifecycle", {"company_or_ticker": "AAPL"}),
         ]:
             text = _render(name, arguments)
             self.assertIn("coverage_audit.status", text)
@@ -84,6 +86,7 @@ class WorkflowToolTests(unittest.TestCase):
             ("company_research_brief", {"ticker": "AAPL", "focus": "margins"}),
             ("finance_literature_review", {"topic": "momentum", "year_from": 2015}),
             ("peer_comparison", {"tickers": "AAPL, MSFT"}),
+            ("company_lifecycle", {"company_or_ticker": "Grab Holdings"}),
         ]
         for name, arguments in cases:
             result = server.get_research_workflow(name, **arguments)
@@ -103,6 +106,7 @@ class WorkflowToolTests(unittest.TestCase):
             {"workflow": "peer_comparison", "tickers": "AAPL"},
             {"workflow": "finance_literature_review", "topic": ""},
             {"workflow": "finance_literature_review", "topic": "x", "year_from": "abc"},
+            {"workflow": "company_lifecycle", "company_or_ticker": "  "},
         ]:
             with self.subTest(kwargs=kwargs):
                 result = server.get_research_workflow(**kwargs)

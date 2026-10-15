@@ -36,6 +36,7 @@ diagrams, a worked example, what has been built and ideas for extending it.
 | --- | --- |
 | Yahoo Finance | Primary public market quotes, history, company data, news, and screeners |
 | Alpha Vantage | Separate opt-in quotes, technical indicators, FX, crypto, macroeconomic data, and news sentiment |
+| Crunchbase | Separate opt-in, licensed private-market data: organizations, funding rounds, investors, and acquisitions (tools appear only when `CRUNCHBASE_API_KEY` is set) |
 | OpenAlex | Published finance, business, economics, and accounting research |
 | arXiv | Quantitative-finance and economics preprints |
 | DOAJ | Vetted open-access journal directory checks |
@@ -100,6 +101,40 @@ Daily usage persists across server restarts in `.av_quota_state.json`, a
 git-ignored local runtime-state file; the rolling minute window remains in
 memory.
 
+### Crunchbase tools (opt-in, licensed)
+
+Crunchbase adds private-market history: funding rounds, investors and
+acquisitions. It is **opt-in**: the tools below are registered only when
+`CRUNCHBASE_API_KEY` is set when the server starts. Without the key, the
+server and its tool list behave exactly as before.
+
+- `search_organization_cb`: name to candidate organizations with permalink,
+  UUID, short description, country, founded date, and stock symbol and
+  exchange if the company is listed
+- `get_funding_rounds_cb`: rounds with date, type, amount and currency, lead
+  investors and post-money valuation
+- `get_acquisitions_cb`: deals where the organization was acquirer or acquiree
+- `get_investor_portfolio_cb`: an investor's most recent investments (1-100)
+
+Crunchbase data is licensed. Use it for institutional research only under
+your organization's Crunchbase agreement. Do not redistribute it, and do not
+commit Crunchbase responses to this repository (the tests use synthetic data
+only). The server does not cache Crunchbase data to disk.
+
+Like Alpha Vantage, Crunchbase figures are never merged into Yahoo Finance
+figures. For listed companies, `search_organization_cb` returns the stock
+symbol so the agent can switch to the Yahoo Finance tools, and the two
+sources are reported in separate sections. An undisclosed amount or valuation
+is returned as `null` with a `*_status` of `"not disclosed"`, never as zero,
+and the audit marks the result `partial`. The client enforces at most 200
+requests in a rolling 60-second window, held in memory, and returns the same
+`quota_exhausted` error shape as Alpha Vantage. A rejected key (HTTP 401 or
+403) returns `error_type: "auth_error"` with a message to update
+`CRUNCHBASE_API_KEY` in Render; the audit marks it `unavailable` and gives
+that reason, never an empty result, and no `fallback_recommendation` is added
+because the fix is a new key, not another source. Other provider failures return
+`error_type: "provider_error"`.
+
 ## Workflow prompts
 
 The server also exposes MCP prompts: ready-made workflows a client's agent can
@@ -113,6 +148,7 @@ never blend Alpha Vantage into Yahoo Finance values).
 | `company_research_brief`    | `ticker`, optional `focus`                  | `get_company_profile`, price history, actions, holders, news, research   |
 | `finance_literature_review` | `topic`, `year_from`, `include_preprints`   | OpenAlex search, full records, arXiv preprints, DOAJ checks, synthesis   |
 | `peer_comparison`           | `tickers` (2-10, comma-separated)           | `compare_peers`, then a table and observations using server-computed ratios |
+| `company_lifecycle`         | `company_or_ticker`                         | Crunchbase funding rounds and acquisitions (if enabled), then `get_company_profile` and price history if listed |
 
 Clients that only support tools (for example ChatGPT) can use the same
 workflows through the `get_research_workflow` tool: pass `workflow` plus its
@@ -202,6 +238,13 @@ set it in the server environment. It is read only when an `_av` tool is called:
 $env:ALPHA_VANTAGE_API_KEY = "your-api-key"
 ```
 
+To enable the Crunchbase tools, set a Crunchbase API key (Enterprise API,
+Advanced Financials package) before starting the server:
+
+```powershell
+$env:CRUNCHBASE_API_KEY = "your-api-key"
+```
+
 Do not commit API keys or `.env` files; both `.env` and `.env.*` are ignored by
 Git.
 
@@ -228,5 +271,6 @@ Streamable HTTP endpoint at `http://localhost:8000/mcp`. Set the `PORT`
 environment variable to use a different port (Render supplies this variable
 automatically).
 
-No authentication, API key, or OAuth configuration is needed because the
-tool only reads public Yahoo Finance data.
+No authentication, API key, or OAuth configuration is needed for the core
+tools, which only read public data. API keys are needed only for the opt-in
+Alpha Vantage and Crunchbase tools.
