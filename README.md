@@ -37,6 +37,8 @@ Research tools: `search_finance_research`, `get_research_paper`,
 `search_finance_preprints`, `check_journal_legitimacy`, and
 `search_finance_research_batch`.
 
+Workflow tool: `get_research_workflow` (see Workflow prompts below).
+
 ### Alpha Vantage tools
 
 Alpha Vantage is exposed through distinct tools and is never blended into the
@@ -69,6 +71,10 @@ never blend Alpha Vantage into Yahoo Finance values).
 | `company_research_brief`    | `ticker`, optional `focus`                  | Quote, price history, statements, actions, holders, news, research       |
 | `finance_literature_review` | `topic`, `year_from`, `include_preprints`   | OpenAlex search, full records, arXiv preprints, DOAJ journal checks       |
 | `peer_comparison`           | `tickers` (2-10, comma-separated)           | Market snapshot, latest income statements, 1-year price change table     |
+
+Clients that only support tools (for example ChatGPT) can use the same
+workflows through the `get_research_workflow` tool: pass `workflow` plus its
+arguments and it returns the identical instructions. It fetches no data itself.
 
 Prompts live in `prompts.py`; a test fails if a prompt names a tool the server
 does not provide.

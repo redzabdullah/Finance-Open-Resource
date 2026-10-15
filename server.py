@@ -23,7 +23,7 @@ from mcp.server.fastmcp import FastMCP, Context
 from mcp.types import ToolAnnotations
 
 from alphavantage_client import request as alphavantage_request
-from prompts import register_prompts
+from prompts import WORKFLOWS, register_prompts, render_workflow
 
 
 mcp = FastMCP(
@@ -463,10 +463,10 @@ async def _offer_av_fallback(
 @mcp.tool(
     title="Get Stock Quote",
     annotations=ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
     ),
 )
 async def get_stock_quote(ticker: str = "", ctx: Context | None = None) -> dict:
@@ -484,10 +484,10 @@ async def get_stock_quote(ticker: str = "", ctx: Context | None = None) -> dict:
 
 
 AV_TOOL_ANNOTATIONS = ToolAnnotations(
-    read_only_hint=True,
-    destructive_hint=False,
-    idempotent_hint=True,
-    open_world_hint=True,
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
 )
 
 
@@ -673,10 +673,10 @@ def get_news_sentiment_av(tickers_or_topics: str = "") -> dict:
 @mcp.tool(
     title="Get Historical Prices",
     annotations=ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
     ),
 )
 @_coverage_tool("prices", "Yahoo Finance", "prices", 250)
@@ -759,10 +759,10 @@ def get_historical_prices(
 @mcp.tool(
     title="Get Financial Statements",
     annotations=ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
     ),
 )
 @_coverage_tool("financial_statements", "Yahoo Finance", "data", 8)
@@ -837,10 +837,10 @@ def get_financial_statements(
 @mcp.tool(
     title="Get Corporate Actions",
     annotations=ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
     ),
 )
 @_coverage_tool("corporate_actions", "Yahoo Finance", limit=200)
@@ -906,10 +906,10 @@ def get_corporate_actions(ticker: str = "", action_type: str = "all") -> dict:
 @mcp.tool(
     title="Get Holders",
     annotations=ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
     ),
 )
 @_coverage_tool("ownership", "Yahoo Finance", "data", 20)
@@ -968,10 +968,10 @@ def get_holders(ticker: str = "", holder_type: str = "major") -> dict:
 @mcp.tool(
     title="Get Sector Data",
     annotations=ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
     ),
 )
 @_coverage_tool("market_classification", "Yahoo Finance", "companies", 15)
@@ -1054,10 +1054,10 @@ def get_sector_data(key: str = "", level: str = "sector") -> dict:
 @mcp.tool(
     title="Get Stock Screener",
     annotations=ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
     ),
 )
 @_coverage_tool("market_screen", "Yahoo Finance", "results", 25)
@@ -1102,10 +1102,10 @@ def get_stock_screener(screen_name: str = "day_gainers") -> dict:
 @mcp.tool(
     title="Get News",
     annotations=ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
     ),
 )
 @_coverage_tool("news", "Yahoo Finance", "news", 10)
@@ -1147,10 +1147,10 @@ def get_news(ticker: str = "") -> dict:
 @mcp.tool(
     title="Get Sustainability",
     annotations=ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
     ),
 )
 @_coverage_tool("sustainability", "Yahoo Finance", "data")
@@ -1194,10 +1194,10 @@ def get_sustainability(ticker: str = "") -> dict:
 @mcp.tool(
     title="Search Finance Research",
     annotations=ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
     ),
 )
 @_coverage_tool("literature", "OpenAlex", "results", 50)
@@ -1271,10 +1271,10 @@ def search_finance_research(
 @mcp.tool(
     title="Get Research Paper",
     annotations=ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
     ),
 )
 @_coverage_tool("literature", "OpenAlex")
@@ -1346,10 +1346,10 @@ def get_research_paper(doi_or_openalex_id: str = "") -> dict:
 @mcp.tool(
     title="Search Finance Preprints",
     annotations=ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
     ),
 )
 @_coverage_tool("literature", "arXiv", "results", 50)
@@ -1422,10 +1422,10 @@ def search_finance_preprints(query: str = "", limit: int = 10) -> dict:
 @mcp.tool(
     title="Check Journal Legitimacy",
     annotations=ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
     ),
 )
 @_coverage_tool("journal_directory", "DOAJ")
@@ -1499,10 +1499,10 @@ def _market_snapshot_for_ticker(raw_ticker: Any) -> dict:
 @mcp.tool(
     title="Get Market Snapshot",
     annotations=ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
     ),
 )
 @_coverage_tool("prices", "Yahoo Finance", "results")
@@ -1572,10 +1572,10 @@ def _finance_research_for_entity(entity: Any, limit: int) -> dict:
 @mcp.tool(
     title="Search Finance Research Batch",
     annotations=ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
     ),
 )
 @_coverage_tool("literature", "OpenAlex", "results")
@@ -1618,6 +1618,59 @@ def search_finance_research_batch(
                 }
 
     return {"results": [indexed_results[index] for index in range(len(entities))]}
+
+
+@mcp.tool(
+    title="Get Research Workflow",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+@_coverage_tool("workflow", "Finance Data and Lit MCP")
+def get_research_workflow(
+    workflow: str = "",
+    ticker: str = "",
+    tickers: str = "",
+    topic: str = "",
+    focus: str = "",
+    year_from: int = 0,
+    include_preprints: bool = True,
+) -> dict:
+    """Return step-by-step instructions for a multi-tool research workflow.
+
+    Call this first when the user asks for a company research brief, a finance
+    literature review, or a peer comparison, then follow the returned
+    instructions exactly, including the coverage rules. Workflows:
+    ``company_research_brief`` (ticker, optional focus),
+    ``finance_literature_review`` (topic, optional year_from and
+    include_preprints) and ``peer_comparison`` (tickers, comma-separated).
+    This tool fetches no market data itself.
+    """
+    name = _normalize_text(workflow).lower()
+    if not name:
+        return {
+            "error": "Please provide a workflow name.",
+            "available_workflows": WORKFLOWS,
+        }
+    try:
+        instructions = render_workflow(
+            name,
+            ticker=ticker,
+            tickers=tickers,
+            topic=topic,
+            focus=focus,
+            year_from=year_from,
+            include_preprints=include_preprints,
+        )
+    except (TypeError, ValueError) as exc:
+        message = str(exc)
+        if not message.startswith(("Please ", "Invalid ")):
+            message = f"Invalid arguments: {message}"
+        return {"error": message, "available_workflows": WORKFLOWS}
+    return {"workflow": name, "instructions": instructions}
 
 
 register_prompts(mcp)

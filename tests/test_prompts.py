@@ -72,5 +72,55 @@ class PromptContentTests(unittest.TestCase):
             prompts.peer_comparison(",".join(f"T{i}" for i in range(11)))
 
 
+class WorkflowToolTests(unittest.TestCase):
+    def test_tool_is_registered_read_only(self):
+        tools = {tool.name: tool for tool in asyncio.run(server.mcp.list_tools())}
+        self.assertIn("get_research_workflow", tools)
+        self.assertTrue(tools["get_research_workflow"].annotations.readOnlyHint)
+
+    def test_tool_matches_prompt_text(self):
+        cases = [
+            ("company_research_brief", {"ticker": "AAPL", "focus": "margins"}),
+            ("finance_literature_review", {"topic": "momentum", "year_from": 2015}),
+            ("peer_comparison", {"tickers": "AAPL, MSFT"}),
+        ]
+        for name, arguments in cases:
+            result = server.get_research_workflow(name, **arguments)
+            self.assertEqual(result["workflow"], name)
+            self.assertEqual(result["instructions"], _render(name, arguments))
+            self.assertEqual(result["coverage_audit"]["status"], "complete")
+
+    def test_tool_name_is_case_insensitive(self):
+        result = server.get_research_workflow("  Peer_Comparison ", tickers="AAPL,MSFT")
+        self.assertEqual(result["workflow"], "peer_comparison")
+
+    def test_tool_validation_errors(self):
+        for kwargs in [
+            {},
+            {"workflow": "make_me_rich"},
+            {"workflow": "company_research_brief", "ticker": "bad ticker!"},
+            {"workflow": "peer_comparison", "tickers": "AAPL"},
+            {"workflow": "finance_literature_review", "topic": ""},
+            {"workflow": "finance_literature_review", "topic": "x", "year_from": "abc"},
+        ]:
+            with self.subTest(kwargs=kwargs):
+                result = server.get_research_workflow(**kwargs)
+                self.assertIn("error", result)
+                self.assertEqual(result["error_type"], "validation")
+                self.assertEqual(set(result["available_workflows"]), set(prompts.WORKFLOWS))
+                self.assertNotIn("instructions", result)
+
+
+class ToolAnnotationTests(unittest.TestCase):
+    def test_every_tool_declares_mcp_read_only_hints(self):
+        # Snake_case keys such as read_only_hint are silently ignored by
+        # clients; the MCP field names are camelCase.
+        for tool in asyncio.run(server.mcp.list_tools()):
+            with self.subTest(tool=tool.name):
+                self.assertIsNotNone(tool.annotations)
+                self.assertIs(tool.annotations.readOnlyHint, True)
+                self.assertIs(tool.annotations.destructiveHint, False)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -130,6 +130,35 @@ three to five plain observations. Mark any cell you could not fill as
 {COVERAGE_RULES}"""
 
 
+WORKFLOWS = {
+    "company_research_brief": "Multi-tool research brief for one ticker (needs ticker; optional focus).",
+    "finance_literature_review": "Review of published research and preprints (needs topic; optional year_from, include_preprints).",
+    "peer_comparison": "Side-by-side comparison of 2-10 tickers (needs tickers, comma-separated).",
+}
+
+
+def render_workflow(
+    workflow: str,
+    ticker: str = "",
+    tickers: str = "",
+    topic: str = "",
+    focus: str = "",
+    year_from: int = 0,
+    include_preprints: bool = True,
+) -> str:
+    """Render a named workflow; raises ValueError on unknown names or bad arguments."""
+    name = (workflow or "").strip().lower()
+    if name == "company_research_brief":
+        return company_research_brief(ticker, focus)
+    if name == "finance_literature_review":
+        return finance_literature_review(topic, year_from, include_preprints)
+    if name == "peer_comparison":
+        return peer_comparison(tickers)
+    raise ValueError(
+        f"Invalid workflow '{workflow}'. Choose one of: {', '.join(sorted(WORKFLOWS))}."
+    )
+
+
 def register_prompts(mcp) -> None:
     """Attach the workflow prompts to a FastMCP server."""
     mcp.prompt(
