@@ -57,6 +57,13 @@ Research tools: `search_finance_research`, `get_research_paper`,
 `search_finance_preprints`, `check_journal_legitimacy`, and
 `search_finance_research_batch`.
 
+Composite tools: `compare_peers` (2-10 tickers) and `get_company_profile` (one
+ticker). They chain the market tools above and compute net margin, ROE,
+debt-to-equity, one-year price change and dividend yield in code, using each
+company's latest annual period. Their `coverage_audit` only checks the fields
+they report, so blank line items in older periods do not mark a result
+partial; the underlying tool audits remain visible in `component_audits`.
+
 Workflow tool: `get_research_workflow` (see Workflow prompts below).
 
 ### Alpha Vantage tools
@@ -88,9 +95,9 @@ never blend Alpha Vantage into Yahoo Finance values).
 
 | Prompt                      | Arguments                                   | Workflow                                                                 |
 | --------------------------- | ------------------------------------------- | ------------------------------------------------------------------------ |
-| `company_research_brief`    | `ticker`, optional `focus`                  | Quote, price history, statements, actions, holders, news, research       |
+| `company_research_brief`    | `ticker`, optional `focus`                  | `get_company_profile`, price history, actions, holders, news, research   |
 | `finance_literature_review` | `topic`, `year_from`, `include_preprints`   | OpenAlex search, full records, arXiv preprints, DOAJ journal checks       |
-| `peer_comparison`           | `tickers` (2-10, comma-separated)           | Market snapshot, latest income statements, 1-year price change table     |
+| `peer_comparison`           | `tickers` (2-10, comma-separated)           | `compare_peers`, then a table and observations using server-computed ratios |
 
 Clients that only support tools (for example ChatGPT) can use the same
 workflows through the `get_research_workflow` tool: pass `workflow` plus its

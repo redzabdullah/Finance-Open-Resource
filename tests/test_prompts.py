@@ -27,9 +27,10 @@ class PromptRegistrationTests(unittest.TestCase):
             _render("peer_comparison", {"tickers": "AAPL, MSFT"}),
         ]
         for text in rendered:
-            for name in re.findall(r"`([a-z_]+)`", text):
-                if "_" in name and not name.startswith(("coverage", "fallback", "suggested", "primary", "not_", "holder", "period", "year", "limit")):
-                    self.assertIn(name, tool_names, f"Prompt references unknown tool {name}")
+            referenced = re.findall(r"`((?:get|search|check|compare)_[a-z_]+)`", text)
+            self.assertTrue(referenced, "Prompt references no tools")
+            for name in referenced:
+                self.assertIn(name, tool_names, f"Prompt references unknown tool {name}")
 
     def test_every_prompt_carries_coverage_rules(self):
         for name, arguments in [

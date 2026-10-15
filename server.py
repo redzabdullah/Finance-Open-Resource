@@ -23,7 +23,7 @@ from mcp.server.fastmcp import FastMCP, Context
 from mcp.types import ToolAnnotations
 
 from alphavantage_client import request as alphavantage_request
-from markets import market_fallback
+from markets import market_fallback, market_for
 from prompts import WORKFLOWS, register_prompts, render_workflow
 
 
@@ -81,6 +81,30 @@ FALLBACK_SOURCES = {
         ],
     },
 }
+
+
+def _fallback_recommendation(data_type: str, tickers=None) -> dict:
+    """Build the confirmation-gated fallback recommendation for a data type."""
+    fallback = market_fallback(data_type, FALLBACK_SOURCES.get(data_type), tickers)
+    if fallback:
+        return {
+            "available": True,
+            "requires_user_confirmation": True,
+            "source_status": "supplementary",
+            **fallback,
+            "suggested_user_prompt": (
+                "Finance Data and Lit could not fully supply the requested "
+                f"{data_type.replace('_', ' ')} data. Would you like me to continue "
+                f"using {fallback['recommended_source']} as a supplementary source?"
+            ),
+        }
+    return {
+        "available": False,
+        "requires_user_confirmation": True,
+        "source_status": "supplementary",
+        "recommended_source": None,
+        "reason": "No narrower authoritative supplementary source is configured for this data type.",
+    }
 
 
 def _coverage_tool(data_type: str, provider: str, collection: str | None = None, limit: int | None = None):
@@ -192,29 +216,9 @@ def _coverage_tool(data_type: str, provider: str, collection: str | None = None,
             if validation:
                 response["error_type"] = "validation"
             if status != "complete":
-                fallback = market_fallback(
-                    data_type, FALLBACK_SOURCES.get(data_type), requested.get("tickers")
+                response["fallback_recommendation"] = _fallback_recommendation(
+                    data_type, requested.get("tickers")
                 )
-                if fallback:
-                    response["fallback_recommendation"] = {
-                        "available": True,
-                        "requires_user_confirmation": True,
-                        "source_status": "supplementary",
-                        **fallback,
-                        "suggested_user_prompt": (
-                            "Finance Data and Lit could not fully supply the requested "
-                            f"{data_type.replace('_', ' ')} data. Would you like me to continue "
-                            f"using {fallback['recommended_source']} as a supplementary source?"
-                        ),
-                    }
-                else:
-                    response["fallback_recommendation"] = {
-                        "available": False,
-                        "requires_user_confirmation": True,
-                        "source_status": "supplementary",
-                        "recommended_source": None,
-                        "reason": "No narrower authoritative supplementary source is configured for this data type.",
-                    }
             return response
 
         return wrapped
@@ -1621,6 +1625,389 @@ def search_finance_research_batch(
                 }
 
     return {"results": [indexed_results[index] for index in range(len(entities))]}
+
+
+# ---------------------------------------------------------------------------
+# Composite tools: fixed multi-step chains whose ratios are computed in code.
+# They reuse the single-purpose tools above, use only each company's latest
+# annual period, and audit only the fields they actually report.
+
+_LINE_ITEMS = {
+    "revenue": ("income", ["Total Revenue", "Operating Revenue"]),
+    "net_income": ("income", ["Net Income", "Net Income Common Stockholders"]),
+    "net_income_common": ("income", ["Net Income Common Stockholders", "Net Income"]),
+    "total_debt": ("balance", ["Total Debt"]),
+    "stockholders_equity": ("balance", ["Stockholders Equity", "Common Stock Equity"]),
+    "free_cash_flow": ("cashflow", ["Free Cash Flow"]),
+}
+
+_METRIC_DATA_TYPE = {
+    "current_price": "prices",
+    "market_cap": "prices",
+    "price_change_1y_pct": "prices",
+    "dividends_ttm": "corporate_actions",
+    "dividend_yield_pct": "corporate_actions",
+}
+
+_METRIC_DEFINITIONS = {
+    "net_margin_pct": "net_income / revenue x 100, latest annual period",
+    "roe_pct": "net income to common stockholders / period-end stockholders' equity x 100, latest annual period (not average equity)",
+    "debt_to_equity": "total_debt / stockholders_equity, latest annual balance sheet",
+    "price_change_1y_pct": "(last weekly close - first weekly close) / first weekly close x 100 over the past year; excludes dividends",
+    "dividends_ttm": "sum of dividends per share with ex-dates in the last 365 days",
+    "dividend_yield_pct": "dividends_ttm / current_price x 100",
+}
+
+COMPARE_PEERS_FIELDS = [
+    "market_cap",
+    "revenue",
+    "net_income",
+    "net_margin_pct",
+    "roe_pct",
+    "price_change_1y_pct",
+]
+
+COMPANY_PROFILE_FIELDS = [
+    "current_price",
+    "market_cap",
+    "revenue",
+    "net_income",
+    "net_margin_pct",
+    "roe_pct",
+    "total_debt",
+    "stockholders_equity",
+    "debt_to_equity",
+    "free_cash_flow",
+    "price_change_1y_pct",
+]
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return None if isnan(value) else value
+
+
+def _ratio(numerator: Any, denominator: Any, scale: float = 100.0, digits: int = 2) -> float | None:
+    numerator, denominator = _number(numerator), _number(denominator)
+    if numerator is None or not denominator:
+        return None
+    return round(numerator / denominator * scale, digits)
+
+
+def _company_metrics(symbol: str, sections: set[str]) -> dict:
+    """Run the single-purpose tools for one ticker and compute metrics in code."""
+    metrics: dict[str, Any] = {}
+    line_items: dict[str, str] = {}
+    periods: dict[str, str] = {}
+    reasons: dict[str, str] = {}
+    components = []
+
+    quote = _get_stock_quote_yahoo(symbol)
+    components.append({"tool": "get_stock_quote", "status": quote.get("coverage_audit", {}).get("status")})
+    metrics["current_price"] = _number(quote.get("current_price"))
+    metrics["market_cap"] = _number(quote.get("market_cap"))
+    if quote.get("error"):
+        reasons["current_price"] = reasons["market_cap"] = quote["error"]
+
+    latest_rows = {}
+    for statement in [name for name in ("income", "balance", "cashflow") if name in sections]:
+        result = get_financial_statements(symbol, statement, "annual")
+        components.append({
+            "tool": "get_financial_statements",
+            "statement": statement,
+            "status": result.get("coverage_audit", {}).get("status"),
+        })
+        rows = result.get("data") or []
+        if rows:
+            latest_rows[statement] = rows[0]
+            periods[statement] = rows[0].get("period_ending")
+        else:
+            latest_rows[statement] = None
+            reasons[statement] = result.get("error") or f"No annual {statement} statement periods were returned."
+
+    for field, (statement, names) in _LINE_ITEMS.items():
+        if statement not in sections:
+            continue
+        row = latest_rows.get(statement)
+        if row is None:
+            metrics[field] = None
+            reasons[field] = reasons[statement]
+            continue
+        metrics[field] = None
+        for name in names:
+            value = _number(row.get(name))
+            if value is not None:
+                metrics[field], line_items[field] = value, name
+                break
+        if metrics[field] is None:
+            reasons[field] = (
+                f"None of {names} is reported for the latest annual period "
+                f"({periods.get(statement)}); earlier periods are not substituted."
+            )
+
+    if "income" in sections:
+        metrics["net_margin_pct"] = _ratio(metrics.get("net_income"), metrics.get("revenue"))
+        if metrics["net_margin_pct"] is None:
+            reasons["net_margin_pct"] = "Requires both net_income and a non-zero revenue."
+    if "income" in sections and "balance" in sections:
+        if periods.get("income") and periods.get("income") != periods.get("balance"):
+            metrics["roe_pct"] = None
+            reasons["roe_pct"] = (
+                f"Income statement ({periods.get('income')}) and balance sheet "
+                f"({periods.get('balance')}) periods differ."
+            )
+        else:
+            metrics["roe_pct"] = _ratio(metrics.get("net_income_common"), metrics.get("stockholders_equity"))
+            if metrics["roe_pct"] is None:
+                reasons.setdefault("roe_pct", "Requires net income and non-zero stockholders' equity.")
+        metrics["debt_to_equity"] = _ratio(metrics.get("total_debt"), metrics.get("stockholders_equity"), 1.0)
+        if metrics["debt_to_equity"] is None:
+            reasons.setdefault("debt_to_equity", "Requires total_debt and non-zero stockholders' equity.")
+    metrics.pop("net_income_common", None)
+    line_items.pop("net_income_common", None)
+
+    history = get_historical_prices(symbol, "1y", "1wk")
+    components.append({"tool": "get_historical_prices", "status": history.get("coverage_audit", {}).get("status")})
+    closes = [row for row in history.get("prices") or [] if _number(row.get("close")) is not None]
+    price_window = None
+    if len(closes) >= 2:
+        first, last = closes[0], closes[-1]
+        price_window = {
+            "start_date": first["date"],
+            "start_close": first["close"],
+            "end_date": last["date"],
+            "end_close": last["close"],
+        }
+        metrics["price_change_1y_pct"] = _ratio(last["close"] - first["close"], first["close"])
+    else:
+        metrics["price_change_1y_pct"] = None
+        reasons["price_change_1y_pct"] = history.get("error") or "Fewer than two weekly closes were returned."
+
+    if "dividends" in sections:
+        actions = get_corporate_actions(symbol, "dividends")
+        components.append({"tool": "get_corporate_actions", "status": actions.get("coverage_audit", {}).get("status")})
+        dividends = actions.get("dividends") or []
+        if dividends:
+            cutoff = date.today().toordinal() - 365
+            recent = [
+                _number(item.get("amount")) or 0.0
+                for item in dividends
+                if date.fromisoformat(item["date"]).toordinal() >= cutoff
+            ]
+            metrics["dividends_ttm"] = round(sum(recent), 6)
+            metrics["dividend_yield_pct"] = _ratio(metrics["dividends_ttm"], metrics.get("current_price"))
+        else:
+            metrics["dividends_ttm"] = metrics["dividend_yield_pct"] = None
+            reasons["dividends_ttm"] = reasons["dividend_yield_pct"] = (
+                actions.get("error")
+                or "No dividend records were returned; this may mean none were paid or that data is unavailable."
+            )
+
+    return {
+        "ticker": symbol,
+        "metrics": metrics,
+        "periods": periods,
+        "line_items_used": line_items,
+        "price_window": price_window,
+        "reasons": reasons,
+        "components": components,
+    }
+
+
+def _composite_audit(entries: list[dict], required: list[str], requested: dict) -> tuple[dict, dict | None]:
+    """Audit only the reported fields; return (coverage_audit, fallback_recommendation)."""
+    gaps = [
+        {
+            "ticker": entry["ticker"],
+            "field": field,
+            "reason": entry["reasons"].get(field, "Not reported by the primary source."),
+        }
+        for entry in entries
+        for field in required
+        if entry["metrics"].get(field) is None
+    ]
+    expected = len(entries) * len(required)
+    if not gaps:
+        status = "complete"
+    elif len(gaps) == expected:
+        status = "unavailable"
+    else:
+        status = "partial"
+    audit = {
+        "status": status,
+        "scope": (
+            "Only the fields listed in requested.fields, for each company's latest "
+            "annual period, are checked. Blank line items in older periods or "
+            "unused fields do not affect this status."
+        ),
+        "requested": requested,
+        "returned": {
+            "tickers": [entry["ticker"] for entry in entries],
+            "fields_returned": expected - len(gaps),
+            "fields_requested": expected,
+        },
+        "missing": {"gaps": gaps} if gaps else {},
+        "computed_by_server": True,
+        "component_audits": [
+            {"ticker": entry["ticker"], **component} for entry in entries for component in entry["components"]
+        ],
+        "primary_source": {
+            "provider": "Yahoo Finance",
+            "retrieval_method": "Finance Data and Lit MCP",
+            "status": "primary_workflow_source",
+            "retrieval_date": date.today().isoformat(),
+        },
+    }
+    if not gaps:
+        return audit, None
+    data_types = {_METRIC_DATA_TYPE.get(gap["field"], "financial_statements") for gap in gaps}
+    data_type = next(
+        (name for name in ("financial_statements", "prices", "corporate_actions") if name in data_types),
+        "financial_statements",
+    )
+    gap_tickers = list(dict.fromkeys(gap["ticker"] for gap in gaps))
+    return audit, _fallback_recommendation(data_type, gap_tickers)
+
+
+def _validation_response(message: str, requested: dict) -> dict:
+    return {
+        "error": message,
+        "error_type": "validation",
+        "coverage_audit": {
+            "status": "unavailable",
+            "requested": requested,
+            "returned": {"row_count": 0},
+            "missing": {"reason": message},
+            "primary_source": {
+                "provider": "Yahoo Finance",
+                "retrieval_method": "Finance Data and Lit MCP",
+                "status": "primary_workflow_source",
+                "retrieval_date": date.today().isoformat(),
+            },
+        },
+    }
+
+
+def _parse_tickers(tickers: Any) -> list[str]:
+    raw = tickers.replace(";", ",").split(",") if isinstance(tickers, str) else (tickers or [])
+    symbols = [_normalize_text(item).upper() for item in raw if _normalize_text(item)]
+    return list(dict.fromkeys(symbols))
+
+
+def _rank(entries: list[dict], field: str) -> list[str]:
+    ranked = [entry for entry in entries if entry["metrics"].get(field) is not None]
+    ranked.sort(key=lambda entry: entry["metrics"][field], reverse=True)
+    return [entry["ticker"] for entry in ranked]
+
+
+@mcp.tool(
+    title="Compare Peers",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+def compare_peers(tickers: list[str] = None) -> dict:
+    """Compare 2-10 companies with metrics computed by the server.
+
+    Returns market cap, latest annual revenue and net income, net margin,
+    return on equity and one-year price change for each ticker, plus rankings.
+    Report the figures as returned rather than recalculating them. The
+    coverage audit only checks the fields reported here, for each company's
+    latest annual period.
+    """
+    symbols = _parse_tickers(tickers)
+    requested = {"tickers": symbols, "fields": COMPARE_PEERS_FIELDS, "data_type": "peer_comparison"}
+    if not 2 <= len(symbols) <= 10:
+        return _validation_response("Please provide 2 to 10 ticker symbols.", requested)
+
+    with ThreadPoolExecutor(max_workers=len(symbols)) as executor:
+        futures = [
+            executor.submit(_company_metrics, symbol, {"income", "balance"}) for symbol in symbols
+        ]
+        entries = [future.result() for future in futures]
+
+    audit, fallback = _composite_audit(entries, COMPARE_PEERS_FIELDS, requested)
+    issuer_markets = {market_for(symbol) for symbol in symbols} - {"NON_EQUITY"}
+    response = {
+        "tickers": symbols,
+        "companies": [
+            {
+                "ticker": entry["ticker"],
+                **{field: entry["metrics"].get(field) for field in COMPARE_PEERS_FIELDS},
+                "fiscal_period_end": entry["periods"].get("income"),
+                "line_items_used": entry["line_items_used"],
+                "price_window": entry["price_window"],
+            }
+            for entry in entries
+        ],
+        "rankings": {field: _rank(entries, field) for field in ("market_cap", "net_margin_pct", "roe_pct", "price_change_1y_pct")},
+        "definitions": {key: _METRIC_DEFINITIONS[key] for key in ("net_margin_pct", "roe_pct", "price_change_1y_pct")},
+        "notes": [
+            "Figures are computed by the server; report them as returned.",
+            "Statement figures use each company's latest annual period; check fiscal_period_end before comparing companies with different year ends.",
+        ],
+        "coverage_audit": audit,
+    }
+    if len(issuer_markets) > 1:
+        response["notes"].append(
+            "These companies are listed in different markets; market cap, revenue and net income are in each company's own currency and are not directly comparable. Percentages are comparable."
+        )
+    if fallback:
+        response["fallback_recommendation"] = fallback
+    return response
+
+
+@mcp.tool(
+    title="Get Company Profile",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+def get_company_profile(ticker: str = "") -> dict:
+    """Return a one-company profile with metrics computed by the server.
+
+    Includes price, market cap, latest annual revenue, net income, net margin,
+    ROE, total debt, equity, debt-to-equity, free cash flow, one-year price
+    change, and trailing-twelve-month dividends and yield. Report the figures
+    as returned rather than recalculating them.
+    """
+    symbol = _normalize_text(ticker).upper()
+    requested = {"tickers": [symbol] if symbol else [], "fields": COMPANY_PROFILE_FIELDS, "data_type": "company_profile"}
+    if not symbol:
+        return _validation_response("Please provide a ticker symbol.", requested)
+
+    entry = _company_metrics(symbol, {"income", "balance", "cashflow", "dividends"})
+    audit, fallback = _composite_audit([entry], COMPANY_PROFILE_FIELDS, requested)
+    extra_gaps = [
+        {"ticker": symbol, "field": field, "reason": entry["reasons"][field]}
+        for field in ("dividends_ttm", "dividend_yield_pct")
+        if entry["metrics"].get(field) is None and field in entry["reasons"]
+    ]
+    response = {
+        "ticker": symbol,
+        **entry["metrics"],
+        "periods": entry["periods"],
+        "line_items_used": entry["line_items_used"],
+        "price_window": entry["price_window"],
+        "definitions": _METRIC_DEFINITIONS,
+        "notes": [
+            "Figures are computed by the server; report them as returned.",
+            "Statement figures are in the issuer's reporting currency, which can differ from the trading currency of the price and dividends.",
+        ],
+        "coverage_audit": audit,
+    }
+    if extra_gaps:
+        response["optional_fields_unavailable"] = extra_gaps
+    if fallback:
+        response["fallback_recommendation"] = fallback
+    return response
 
 
 @mcp.tool(

@@ -55,19 +55,19 @@ def company_research_brief(ticker: str, focus: str = "") -> str:
 Prepare a factual research brief on {symbol}.{focus_line}
 
 Workflow:
-1. `get_stock_quote` for {symbol}: current price, previous close, market cap.
+1. `get_company_profile` for {symbol}: price, market cap, latest annual
+   revenue, net income, net margin, ROE, debt, equity, free cash flow,
+   one-year price change and trailing dividends, all computed by the server.
+   Report these figures as returned; do not recalculate them.
 2. `get_historical_prices` for {symbol} with period `1y`, interval `1wk`:
    describe the 52-week range and trend.
-3. `get_financial_statements` for {symbol}: `income` annual, then `balance`
-   annual, then `cashflow` annual. Summarise revenue, net income, total debt
-   and free cash flow across the periods returned.
-4. `get_corporate_actions` for {symbol}: recent dividends and splits.
-5. `get_holders` for {symbol} with holder_type `major`.
-6. `get_news` for {symbol}: the main recent themes, with links.
-7. `search_finance_research` with the company name and limit 5: any academic
+3. `get_corporate_actions` for {symbol}: recent dividends and splits.
+4. `get_holders` for {symbol} with holder_type `major`.
+5. `get_news` for {symbol}: the main recent themes, with links.
+6. `search_finance_research` with the company name and limit 5: any academic
    work about the company or its industry.
 
-Output: a brief with sections for Snapshot, Price history, Financials,
+Output: a brief with sections for Snapshot and key ratios, Price history,
 Corporate actions, Ownership, News, Research, and a final "Data gaps" section
 listing every result whose coverage status was not `complete`.
 
@@ -115,17 +115,22 @@ def peer_comparison(tickers: str) -> str:
 Compare these companies side by side: {joined}.
 
 Workflow:
-1. `get_market_snapshot` with tickers [{joined}]: price and market cap, ranked.
-2. For each ticker, `get_financial_statements` with statement `income` and
-   period `annual`. Use only the most recent period each company reports, and
-   state its period-ending date, since fiscal years can differ.
-3. For each ticker, `get_historical_prices` with period `1y`, interval `1mo`:
-   compute the 1-year price change from the first and last closes returned.
+1. `compare_peers` with tickers [{joined}]. The server returns market cap,
+   latest annual revenue and net income, net margin, ROE and one-year price
+   change for each company, with rankings and the line items and dates used.
+2. Report the figures exactly as returned; do not recalculate them. Quote
+   each company's `fiscal_period_end` and the `price_window` dates.
+3. For any gap listed in `coverage_audit.missing.gaps`, say "unavailable"
+   and give the stated reason. Only if the user asks why a figure is
+   missing, call `get_financial_statements` for that ticker to show what
+   the source reported.
 
-Output: one comparison table (rows = companies; columns = market cap, latest
-revenue, net income, net margin, 1-year price change, fiscal period end), then
-three to five plain observations. Mark any cell you could not fill as
-"unavailable", never as 0. Show your margin and price-change arithmetic.
+Output: one comparison table (rows = companies; columns = market cap,
+revenue, net income, net margin, ROE, 1-year price change, fiscal period
+end), then three to five plain observations based on the rankings. Repeat
+any notes the tool returns (for example about currencies). For banks and
+other financial firms, say that net margin is a weak measure and ROE is
+more meaningful.
 
 {COVERAGE_RULES}"""
 
@@ -133,7 +138,7 @@ three to five plain observations. Mark any cell you could not fill as
 WORKFLOWS = {
     "company_research_brief": "Multi-tool research brief for one ticker (needs ticker; optional focus).",
     "finance_literature_review": "Review of published research and preprints (needs topic; optional year_from, include_preprints).",
-    "peer_comparison": "Side-by-side comparison of 2-10 tickers (needs tickers, comma-separated).",
+    "peer_comparison": "Side-by-side comparison of 2-10 tickers with server-computed ratios (needs tickers, comma-separated).",
 }
 
 

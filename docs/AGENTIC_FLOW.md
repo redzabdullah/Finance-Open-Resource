@@ -22,6 +22,7 @@ your approval when a guardrail requires it.
 | Understands your question | Yes | No |
 | Decides which tools to call and in what order | Yes, optionally guided by a recipe | Supplies the recipes |
 | Fetches data | Asks for it | Yes, read-only |
+| Calculates ratios (margins, ROE, price changes) | Reports them | Yes, in code, through the composite tools |
 | Checks data completeness | Reads the audit | Writes a `coverage_audit` on every response |
 | Suggests other sources when data is missing | Relays the suggestion to you | Writes a `fallback_recommendation` |
 | Uses another source | Only after you say yes | Never on its own |
@@ -40,7 +41,7 @@ sequenceDiagram
     Agent->>Server: get_research_workflow(peer_comparison, tickers)
     Server-->>Agent: Step-by-step recipe + coverage rules
     loop For each step in the recipe
-        Agent->>Server: Call the next tool (snapshot, statements, prices)
+        Agent->>Server: Call the next tool (e.g. compare_peers, get_news)
         Server->>Data: Fetch public data
         Data-->>Server: Raw data
         Server-->>Agent: Data + coverage_audit (+ fallback_recommendation if incomplete)
@@ -60,9 +61,9 @@ Three recipes live in [`prompts.py`](../prompts.py):
 
 | Workflow | What the agent is told to do |
 | --- | --- |
-| `company_research_brief` | Quote, one-year price history, income/balance/cash-flow statements, dividends and splits, major holders, news, and related academic research, then a "Data gaps" section |
+| `company_research_brief` | Company profile with server-computed ratios, one-year price history, dividends and splits, major holders, news, and related academic research, then a "Data gaps" section |
 | `finance_literature_review` | Search published research (OpenAlex), read the top papers, search preprints (arXiv) separately, and check journals against DOAJ |
-| `peer_comparison` | Market snapshot, latest annual income statement for each company, one-year price change, then one comparison table with the arithmetic shown |
+| `peer_comparison` | Call `compare_peers`, report its server-computed figures without recalculating, and explain any gaps |
 
 The recipes reach the agent in two ways, because AI clients differ:
 
@@ -104,22 +105,44 @@ Two decisions always come back to you:
   incomplete. Clients that support MCP elicitation show an accept/decline
   prompt; others receive the offer as text for the agent to relay.
 
+## Composite tools: reliable building blocks
+
+`compare_peers` and `get_company_profile` run a fixed chain of the
+single-purpose tools inside the server and calculate the ratios in code, so
+the agent reports figures instead of doing arithmetic. They:
+
+- use each company's **latest annual period** only, and never fill a missing
+  figure from an earlier year;
+- name the **line item and date** behind every figure (`line_items_used`,
+  `fiscal_period_end`, `price_window`);
+- refuse to compute ROE when the income statement and balance sheet are from
+  different years;
+- return one **combined coverage audit** that checks only the fields they
+  report, while keeping each underlying tool's audit in `component_audits`.
+
+This is deliberately *less* agentic than letting the model do everything:
+mechanical steps move into code, and the agent keeps the judgment.
+
 ## Worked example
 
 Request: *"Use the peer comparison workflow for D05.SI, O39.SI, U11.SI."*
 
 1. The agent calls `get_research_workflow` and receives the peer comparison
    recipe.
-2. It calls `get_market_snapshot` for the three banks, then
-   `get_financial_statements` and `get_historical_prices` for each one.
-3. It reads each `coverage_audit`. Prices and the snapshot are `complete`;
-   two banks' statements are `partial` because some older periods have blank
-   fields.
-4. It builds the comparison table, shows how each margin and price change was
-   calculated, and lists the data gaps.
-5. Because the statements were partial, it ends by asking: *"Would you like me
-   to continue using SGXNet company announcements and issuer annual reports as
-   a supplementary source?"* Nothing is fetched until you answer.
+2. It calls `compare_peers` for the three banks. The server fetches each
+   bank's quote, latest annual income statement and balance sheet, and one
+   year of weekly prices, then computes net margin, ROE and price change.
+3. The combined `coverage_audit` is `complete`, because every reported
+   figure is present for FY2025. Blank fields in older years are ignored,
+   though the underlying statement audits still show them as `partial`.
+4. The agent builds the table from the returned figures, quotes the fiscal
+   period and price window, and notes that ROE is the better measure for
+   banks.
+5. Had a figure been missing, it would appear in
+   `coverage_audit.missing.gaps` with a reason, and the agent would end by
+   asking: *"Would you like me to continue using SGXNet company announcements
+   and issuer annual reports as a supplementary source?"* Nothing is fetched
+   until you answer.
 
 ## What this server deliberately does not do
 
@@ -138,7 +161,7 @@ The agentic capability is being added in small steps:
 | 1 | Workflow recipes as MCP prompts | Done |
 | 1b | `get_research_workflow` tool for tool-only clients; correct read-only annotations on all tools | Done |
 | – | Market-aware fallback recommendations (SGX, HKEX, LSE, JPX, ASX, TSX, NSE/BSE, KRX) | Done |
-| 2 | Composite tools (`compare_peers`, `get_company_profile`) that run fixed multi-step chains and compute ratios in code, with a combined audit that only flags gaps in the data actually used | Planned |
+| 2 | Composite tools (`compare_peers`, `get_company_profile`) that run fixed multi-step chains and compute ratios in code, with a combined audit that only flags gaps in the data actually used | Done |
 | 3 | First model-in-the-loop step: the server asks the client's model to summarise research results (MCP sampling), with a plain-data fallback for clients that cannot | Planned |
 | 4 | Bounded decision loop: the model chooses the next tool within fixed step and quota limits, with every fallback still confirmed by the user | Planned |
 | 5 | A separate orchestrator agent that uses this server as its tool layer | Planned |
