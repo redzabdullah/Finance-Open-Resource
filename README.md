@@ -5,6 +5,26 @@ and finance literature. Yahoo Finance is the primary market-data provider;
 OpenAlex, arXiv, and DOAJ provide research and journal-directory records. The
 server uses Streamable HTTP transport.
 
+## Agentic flow at a glance
+
+This server is the tool layer for an AI agent such as ChatGPT or Claude. It
+contains no AI model itself. The agent decides what to do; the server gives it
+**tools** to fetch data, **recipes** for multi-step research tasks (company
+briefs, literature reviews, peer comparisons), and **guardrails** in every
+response that flag missing data and require your approval before any
+supplementary source is used.
+
+```
+You ──► AI agent ──► get_research_workflow ──► recipe (which tools, in what order)
+            │
+            ├──► tool calls ──► data + coverage_audit (+ fallback_recommendation)
+            │
+            └──► answer with gaps labelled ──► "Use <source> as a supplement?" ──► You decide
+```
+
+See [How the agentic flow works](docs/AGENTIC_FLOW.md) for a step-by-step
+diagram, a worked example and the roadmap.
+
 ## Data sources
 
 | Source | Purpose |
