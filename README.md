@@ -1,9 +1,24 @@
-# Finance Data MCP Server
+# Open Finance Data and Literature Review MCP Server
+Developed by Redzuan Abdullah
 
-A read-only remote Model Context Protocol (MCP) server for public market data
-and finance literature. Yahoo Finance is the primary market-data provider;
-OpenAlex, arXiv, and DOAJ provide research and journal-directory records. The
-server uses Streamable HTTP transport.
+Look up stock prices, compare companies, and find finance research papers
+from an MCP-compatible AI assistant such as ChatGPT or Claude.
+
+Finance Open Resource is a read-only Model Context Protocol (MCP) server.
+It brings together public market data from Yahoo Finance, scholarly records
+from OpenAlex, finance and economics preprints from arXiv, and open-access
+journal listings from DOAJ. It identifies sources and flags gaps in coverage.
+
+## What you can ask
+
+- **Historical stock prices** — “Show Apple’s monthly stock prices for the
+  past 12 months and identify the source.”
+- **Company comparisons** — “Compare Microsoft and Alphabet on revenue,
+  operating margin, and operating cash flow for their latest fiscal years.
+  Flag differences in reporting periods.”
+- **Finance literature search** — “Find published studies on how monetary
+  policy affects bank lending. Include publication years and DOIs where
+  available.”
 
 ## Agentic flow at a glance
 
