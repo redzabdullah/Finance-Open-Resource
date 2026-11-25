@@ -286,6 +286,10 @@ Streamable HTTP endpoint at `http://localhost:8000/mcp`. Set the `PORT`
 environment variable to use a different port (Render supplies this variable
 automatically).
 
+The server runs in stateless HTTP mode so no in-memory MCP session ID needs to
+survive Render free-tier restarts, avoiding subsequent "Missing session ID"
+errors in ChatGPT connectors.
+
 No authentication, API key, or OAuth configuration is needed for the core
 tools, which only read public data. API keys are needed only for the opt-in
 Alpha Vantage and Crunchbase tools.

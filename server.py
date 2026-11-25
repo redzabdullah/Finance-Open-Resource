@@ -34,6 +34,10 @@ mcp = FastMCP(
     "finance-data-server",
     host="0.0.0.0",
     port=int(os.getenv("PORT", 8000)),
+    # Stateless mode: no Mcp-Session-Id has to survive between requests.
+    # Render's free tier restarts the process, which wiped in-memory
+    # sessions and made ChatGPT fail with "Missing session ID".
+    stateless_http=True,
 )
 
 
